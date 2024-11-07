@@ -66,11 +66,19 @@ function saveState() {
   }
 }
 
+// Add this helper function near the top with your other functions
+function isCenterCell(row, col) {
+  return row === 2 && col === 2;  // C3 is at position [2,2] (0-based indexing)
+}
+
 // API Routes
 app.get('/api/get-card', (req, res) => res.json(bingoCard));
 
 app.post('/api/set-cell', (req, res) => {
   const { row, col, content } = req.body;
+  if (isCenterCell(row, col)) {
+    return res.status(400).json({ error: 'Cannot modify center free space' });
+  }
   bingoCard.cells[row][col].value = content;
   saveState();
   res.json(bingoCard);
@@ -85,6 +93,9 @@ app.post('/api/clear-cell', (req, res) => {
 
 app.post('/api/mark-cell', (req, res) => {
   const { row, col } = req.body;
+  if (isCenterCell(row, col)) {
+    return res.status(400).json({ error: 'Cannot modify center free space' });
+  }
   bingoCard.cells[row][col].marked = true;
   saveState();
   res.json(bingoCard);
@@ -92,6 +103,9 @@ app.post('/api/mark-cell', (req, res) => {
 
 app.post('/api/unmark-cell', (req, res) => {
   const { row, col } = req.body;
+  if (isCenterCell(row, col)) {
+    return res.status(400).json({ error: 'Cannot modify center free space' });
+  }
   bingoCard.cells[row][col].marked = false;
   saveState();
   res.json(bingoCard);
@@ -193,6 +207,12 @@ client.on('interactionCreate', async interaction => {
     // For commands that need a cell reference
     const cell = interaction.options.getString('cell');
     const { row, col } = parseCell(cell);
+
+    // Check if trying to modify center cell
+    if (isCenterCell(row, col)) {
+      await interaction.reply('Cannot modify the center free space cell (C3)');
+      return;
+    }
 
     switch(subcommand) {
       case 'set':
