@@ -16,6 +16,7 @@ const fs = require('fs');
 const logger = require('./logger');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
+const { downloadAndSaveImage } = require('./utils/imageHandler');
 
 const app = express();
 const PORT = 3000;
@@ -296,9 +297,27 @@ client.on('interactionCreate', async interaction => {
         const cell = interaction.options.getString('cell');
         const text = interaction.options.getString('text');
         const { row, col } = parseCell(cell);
-        board.cells[row][col].value = text;
-        saveBoard(board);
-        await interaction.reply(`Set cell ${cell} to "${text}"`);
+        
+        try {
+          if (text.match(/^https?:\/\/.*\.(jpg|jpeg|png)(\?.*)?$/i)) {
+            // Handle image URL
+            await interaction.deferReply();
+            const localPath = await downloadAndSaveImage(text);
+            board.cells[row][col].value = `image:${localPath}`;
+            saveBoard(board);
+            await interaction.editReply(`Set cell ${cell} to image`);
+          } else {
+            // Handle regular text
+            board.cells[row][col].value = text;
+            saveBoard(board);
+            await interaction.reply(`Set cell ${cell} to "${text}"`);
+          }
+        } catch (error) {
+          await interaction.reply({ 
+            content: `Error setting cell: ${error.message}`, 
+            ephemeral: true 
+          });
+        }
         break;
 
       case 'mark':
