@@ -168,13 +168,17 @@ h1 {
   }
 
   .grid {
-    gap: 2px;
-    width: 95vw;
+    width: 100%;
+    aspect-ratio: auto;
+    min-height: 70vh;
+    margin: 0.5rem auto;
   }
 
   .cell {
-    padding: 2px;
-    font-size: clamp(8px, 2.5vw, 14px);
+    aspect-ratio: auto;
+    min-height: 12vh;
+    padding: 0.5rem;
+    font-size: clamp(10px, 3vw, 16px);
   }
 
   .theme-toggle {
