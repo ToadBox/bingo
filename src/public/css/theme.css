@@ -19,19 +19,3 @@ body {
   color: var(--text-color);
   transition: background-color 0.3s, color 0.3s;
 }
-
-.theme-toggle {
-  position: fixed;
-  top: 1rem;
-  right: 1rem;
-  padding: 0.5rem;
-  border-radius: 50%;
-  border: 1px solid var(--border-color);
-  background: var(--card-bg);
-  cursor: pointer;
-  transition: background-color 0.3s;
-}
-
-.theme-toggle:hover {
-  background: var(--hover-bg);
-} 

@@ -19,11 +19,6 @@ export function initTheme() {
   themeToggle.innerHTML = document.documentElement.getAttribute('data-theme') === 'light' ? '🌙' : '☀️';
   themeToggle.setAttribute('aria-label', 'Toggle theme');
   
-  // Position the toggle button
-  themeToggle.style.position = 'fixed';
-  themeToggle.style.bottom = '1rem';
-  themeToggle.style.right = '1rem';
-  
   document.body.appendChild(themeToggle);
   
   // Add click handler
