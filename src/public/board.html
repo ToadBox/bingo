@@ -8,34 +8,21 @@
   <link rel="stylesheet" href="/css/board.css">
 </head>
 <body>
-  <div class="header">
-    <a href="/" class="back-link">←</a>
-    <h1 id="title">Loading...</h1>
-  </div>
-
-  <div class="grid-container">
-    <div class="grid" id="grid"></div>
-  </div>
-
-  <div class="context-menu" id="contextMenu">
-    <button id="setText">Set Text</button>
-    <button id="toggleMark">Toggle Mark</button>
-    <button id="clearCell">Clear Cell</button>
-  </div>
+  <a href="/" class="back-link">←</a>
+  <h1 id="title">Loading board...</h1>
+  <div id="grid" class="grid"></div>
 
   <script type="module">
-    import { fetchBoard, setCell, toggleMark } from '/js/api.js';
+    import { fetchBoard } from '/js/api.js';
     import Logger from '/js/logger.js';
     import { initTheme } from '/js/theme.js';
 
-    const gridElement = document.getElementById('grid');
-    const titleElement = document.getElementById('title');
-    const contextMenu = document.getElementById('contextMenu');
-    const boardId = window.location.pathname.split('/').pop();
-    let activeCell = null;
-
     // Initialize theme
     initTheme();
+
+    const gridElement = document.getElementById('grid');
+    const titleElement = document.getElementById('title');
+    const boardId = window.location.pathname.split('/').pop();
 
     async function updateBoard() {
       Logger.info('Updating board', { boardId });
@@ -57,8 +44,6 @@
         row.forEach((cell, colIndex) => {
           const cellElement = document.createElement('div');
           cellElement.className = 'cell' + (cell.marked ? ' marked' : '');
-          cellElement.dataset.row = rowIndex;
-          cellElement.dataset.col = colIndex;
           
           if (cell.value) {
             if (cell.value.toLowerCase().startsWith('image:')) {
@@ -87,74 +72,7 @@
       });
     }
 
-    // Context menu handlers
-    document.addEventListener('click', () => contextMenu.style.display = 'none');
-
-    gridElement.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      const cell = e.target.closest('.cell');
-      if (!cell) return;
-
-      const row = parseInt(cell.dataset.row);
-      const col = parseInt(cell.dataset.col);
-      if (row === 2 && col === 2) return; // Ignore center cell
-
-      activeCell = cell;
-      contextMenu.style.display = 'block';
-      contextMenu.style.left = `${e.pageX}px`;
-      contextMenu.style.top = `${e.pageY}px`;
-    });
-
-    document.getElementById('setText').addEventListener('click', async () => {
-      if (!activeCell) return;
-      const row = parseInt(activeCell.dataset.row);
-      const col = parseInt(activeCell.dataset.col);
-      
-      Logger.info('Setting cell text', { boardId, row, col });
-      try {
-        const text = prompt('Enter cell text:');
-        if (text === null) {
-          Logger.debug('Text input cancelled');
-          return;
-        }
-        
-        await setCell(boardId, row, col, text);
-        Logger.info('Cell text set successfully', { boardId, row, col, text });
-        updateBoard();
-      } catch (error) {
-        Logger.error('Failed to set cell text', { boardId, row, col, error: error.message });
-      }
-    });
-
-    document.getElementById('toggleMark').addEventListener('click', async () => {
-      if (!activeCell) return;
-      try {
-        await toggleMark(boardId,
-          parseInt(activeCell.dataset.row),
-          parseInt(activeCell.dataset.col),
-          activeCell.classList.contains('marked')
-        );
-        updateBoard();
-      } catch (error) {
-        console.error('Error toggling mark:', error);
-      }
-    });
-
-    document.getElementById('clearCell').addEventListener('click', async () => {
-      if (!activeCell) return;
-      try {
-        await setCell(boardId,
-          parseInt(activeCell.dataset.row),
-          parseInt(activeCell.dataset.col),
-          ''
-        );
-        updateBoard();
-      } catch (error) {
-        console.error('Error clearing cell:', error);
-      }
-    });
-
-    // Initial load and refresh
+    // Initial load and periodic refresh
     updateBoard();
     setInterval(updateBoard, 5000);
   </script>

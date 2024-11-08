@@ -1,8 +1,9 @@
-.header {
+body {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: var(--spacing-unit);
   gap: var(--spacing-unit);
-  margin-bottom: var(--spacing-unit);
 }
 
 .back-link {
@@ -15,6 +16,7 @@
   padding: 0.5rem 1rem;
   border-radius: 8px;
   transition: background-color 0.2s ease;
+  width: fit-content;
 }
 
 .back-link:hover {
@@ -26,12 +28,9 @@
   color: var(--accent-color);
 }
 
-.grid-container {
-  flex-grow: 1;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: var(--spacing-unit);
+h1 {
+  text-align: center;
+  margin: 0;
 }
 
 .grid {
@@ -40,6 +39,7 @@
   gap: clamp(4px, 1vw, 10px);
   width: min(95vw, 95vh, 800px);
   aspect-ratio: 1;
+  margin: 0 auto;
 }
 
 .cell {
@@ -47,7 +47,7 @@
   background: var(--card-bg);
   color: var(--text-color);
   border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 4px var(--shadow-color);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -57,12 +57,11 @@
   font-size: clamp(12px, 2.5vw, 18px);
   word-break: break-word;
   overflow: hidden;
-  cursor: pointer;
-  transition: background-color 0.2s ease;
+  user-select: none;
 }
 
 .cell:hover {
-  background: var(--card-bg-hover);
+  background: var(--card-bg);
 }
 
 .cell-label {
