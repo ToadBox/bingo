@@ -1,10 +1,11 @@
-const fetch = require('node-fetch');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const { Readable } = require('stream');
+const { finished } = require('stream/promises');
 
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png'];
-const IMAGES_DIR = path.join(__dirname, '../public/images/cells');
+const IMAGES_DIR = path.join(__dirname, '../../public/images/cells');
 
 // Ensure images directory exists
 if (!fs.existsSync(IMAGES_DIR)) {
@@ -31,7 +32,9 @@ async function downloadAndSaveImage(url) {
 
     // Download image
     const response = await fetch(url);
-    if (!response.ok) throw new Error('Failed to fetch image');
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.statusText}`);
+    }
 
     // Validate content type
     const contentType = response.headers.get('content-type');
@@ -39,9 +42,13 @@ async function downloadAndSaveImage(url) {
       throw new Error('URL does not point to an image');
     }
 
-    // Save image
-    const buffer = await response.buffer();
-    await fs.promises.writeFile(filepath, buffer);
+    // Create write stream
+    const fileStream = fs.createWriteStream(filepath);
+    
+    // Convert response to stream and pipe to file
+    await finished(
+      Readable.fromWeb(response.body).pipe(fileStream)
+    );
 
     return `/images/cells/${filename}`;
   } catch (error) {

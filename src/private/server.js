@@ -498,6 +498,9 @@ app.use((req, res, next) => {
 
 app.use(helmet());
 
+// Add this near your other static middleware (around line 108)
+app.use('/images/cells', express.static(path.join(__dirname, '../public/images/cells')));
+
 // Start the server and bot
 app.listen(PORT, () => console.log(`Server is running on http://localhost:${PORT}`));
 client.login(process.env.DISCORD_TOKEN); 
