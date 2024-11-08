@@ -13,11 +13,92 @@ console.log('Env file contents:', {
 const express = require('express');
 const { Client, GatewayIntentBits, SlashCommandBuilder } = require('discord.js');
 const fs = require('fs');
+const logger = require('./logger');
 
 const app = express();
 const PORT = 3000;
 const SAVE_FILE = path.join(__dirname, 'bingoState.json');
 const columns = ['A', 'B', 'C', 'D', 'E'];
+
+const BOARDS_DIR = path.join(__dirname, 'boards');
+const DEFAULT_BOARD_TITLE = 'New Bingo Board';
+
+// Ensure boards directory exists
+if (!fs.existsSync(BOARDS_DIR)) {
+  fs.mkdirSync(BOARDS_DIR);
+}
+
+function getBoardPath(boardId) {
+  logger.debug('Getting board path', { boardId });
+  const cleanId = boardId.replace(/^(user-|server-)/, '');
+  const prefix = boardId.startsWith('server-') ? 'server-' : 'user-';
+  const boardPath = path.join(BOARDS_DIR, `${prefix}${cleanId}-board.json`);
+  logger.debug('Board path resolved', { boardId, boardPath });
+  return boardPath;
+}
+
+function createNewBoard(userId, userName) {
+  const cleanUserId = userId.replace(/^user-/, '');
+  return {
+    id: `user-${cleanUserId}`,
+    createdBy: userName,
+    createdAt: Date.now(),
+    lastUpdated: Date.now(),
+    title: `${userName}'s Bingo Board`,
+    cells: Array(5).fill().map((_, rowIndex) =>
+      Array(5).fill().map((_, colIndex) => ({
+        label: `${columns[colIndex]}${rowIndex + 1}`,
+        value: '',
+        marked: false
+      }))
+    ),
+  };
+}
+
+function loadBoard(boardId) {
+  const boardPath = getBoardPath(boardId);
+  logger.debug('Loading board', { 
+    boardId, 
+    path: boardPath,
+    exists: fs.existsSync(boardPath)
+  });
+  
+  if (fs.existsSync(boardPath)) {
+    try {
+      const savedState = fs.readFileSync(boardPath, 'utf8');
+      const board = JSON.parse(savedState);
+      logger.info('Board loaded successfully', { 
+        boardId,
+        title: board.title,
+        path: boardPath
+      });
+      return board;
+    } catch (error) {
+      logger.error('Error parsing board file', {
+        boardId,
+        path: boardPath,
+        error: error.message
+      });
+      return null;
+    }
+  }
+  logger.warn('Board file not found', { boardId, path: boardPath });
+  return null;
+}
+
+function saveBoard(board) {
+  board.lastUpdated = Date.now();
+  const boardPath = getBoardPath(board.id);
+  logger.debug('Saving board', { boardId: board.id, path: boardPath });
+  
+  try {
+    fs.writeFileSync(boardPath, JSON.stringify(board, null, 2));
+    logger.info('Board saved successfully', { boardId: board.id });
+  } catch (error) {
+    logger.error('Failed to save board', { boardId: board.id, error: error.message });
+    throw error;
+  }
+}
 
 // Express middleware
 app.use(express.json());
@@ -66,19 +147,11 @@ function saveState() {
   }
 }
 
-// Add this helper function near the top with your other functions
-function isCenterCell(row, col) {
-  return row === 2 && col === 2;  // C3 is at position [2,2] (0-based indexing)
-}
-
 // API Routes
 app.get('/api/get-card', (req, res) => res.json(bingoCard));
 
 app.post('/api/set-cell', (req, res) => {
   const { row, col, content } = req.body;
-  if (isCenterCell(row, col)) {
-    return res.status(400).json({ error: 'Cannot modify center free space' });
-  }
   bingoCard.cells[row][col].value = content;
   saveState();
   res.json(bingoCard);
@@ -93,9 +166,6 @@ app.post('/api/clear-cell', (req, res) => {
 
 app.post('/api/mark-cell', (req, res) => {
   const { row, col } = req.body;
-  if (isCenterCell(row, col)) {
-    return res.status(400).json({ error: 'Cannot modify center free space' });
-  }
   bingoCard.cells[row][col].marked = true;
   saveState();
   res.json(bingoCard);
@@ -103,9 +173,6 @@ app.post('/api/mark-cell', (req, res) => {
 
 app.post('/api/unmark-cell', (req, res) => {
   const { row, col } = req.body;
-  if (isCenterCell(row, col)) {
-    return res.status(400).json({ error: 'Cannot modify center free space' });
-  }
   bingoCard.cells[row][col].marked = false;
   saveState();
   res.json(bingoCard);
@@ -136,11 +203,21 @@ function parseCell(cell) {
 }
 
 client.once('ready', async () => {
-  console.log('Discord bot is ready!');
+  logger.info('Discord bot is ready', { username: client.user.tag });
   const commands = [
     new SlashCommandBuilder()
       .setName('bingo')
-      .setDescription('Manage the bingo card')
+      .setDescription('Manage bingo boards')
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('create')
+          .setDescription('Create a new bingo board')
+          .addStringOption(option =>
+            option.setName('title')
+            .setDescription('Title for the new board')
+            .setRequired(true)
+          )
+      )
       .addSubcommand(subcommand =>
         subcommand
           .setName('set')
@@ -194,55 +271,191 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isCommand()) return;
 
   if (interaction.commandName === 'bingo') {
+    const userId = interaction.user.id;
+    const userName = interaction.user.username;
+    
+    logger.info('Bingo command received', {
+      userId,
+      userName,
+      subcommand: interaction.options.getSubcommand()
+    });
+    
+    // Load or create user's board
+    let board = loadBoard(userId);
+    if (!board) {
+      board = createNewBoard(userId, userName);
+      saveBoard(board);
+    }
+
     const subcommand = interaction.options.getSubcommand();
-
-    if (subcommand === 'title') {
-      const newTitle = interaction.options.getString('text');
-      bingoCard.title = newTitle;
-      saveState();
-      await interaction.reply(`Set board title to "${newTitle}"`);
-      return;
-    }
-
-    // For commands that need a cell reference
-    const cell = interaction.options.getString('cell');
-    const { row, col } = parseCell(cell);
-
-    // Check if trying to modify center cell
-    if (isCenterCell(row, col)) {
-      await interaction.reply('Cannot modify the center free space cell (C3)');
-      return;
-    }
 
     switch(subcommand) {
       case 'set':
+        const cell = interaction.options.getString('cell');
         const text = interaction.options.getString('text');
-        bingoCard.cells[row][col].value = text;
-        saveState();
+        const { row, col } = parseCell(cell);
+        board.cells[row][col].value = text;
+        saveBoard(board);
         await interaction.reply(`Set cell ${cell} to "${text}"`);
         break;
 
       case 'mark':
-        bingoCard.cells[row][col].marked = true;
-        saveState();
-        await interaction.reply(`Marked cell ${cell} with an X`);
+        const markCell = interaction.options.getString('cell');
+        const { row: markRow, col: markCol } = parseCell(markCell);
+        board.cells[markRow][markCol].marked = true;
+        saveBoard(board);
+        await interaction.reply(`Marked cell ${markCell} with an X`);
         break;
 
       case 'unmark':
-        bingoCard.cells[row][col].marked = false;
-        saveState();
-        await interaction.reply(`Removed the X from cell ${cell}`);
+        const unmarkCell = interaction.options.getString('cell');
+        const { row: unmarkRow, col: unmarkCol } = parseCell(unmarkCell);
+        board.cells[unmarkRow][unmarkCol].marked = false;
+        saveBoard(board);
+        await interaction.reply(`Removed the X from cell ${unmarkCell}`);
         break;
 
       case 'clear':
-        bingoCard.cells[row][col].value = '';
-        bingoCard.cells[row][col].marked = false;
-        saveState();
-        await interaction.reply(`Cleared cell ${cell}`);
+        const clearCell = interaction.options.getString('cell');
+        const { row: clearRow, col: clearCol } = parseCell(clearCell);
+        board.cells[clearRow][clearCol].value = '';
+        board.cells[clearRow][clearCol].marked = false;
+        saveBoard(board);
+        await interaction.reply(`Cleared cell ${clearCell}`);
+        break;
+
+      case 'title':
+        const newTitle = interaction.options.getString('text');
+        board.title = newTitle;
+        saveBoard(board);
+        await interaction.reply(`Updated board title to "${newTitle}"`);
+        break;
+
+      default:
+        await interaction.reply('Unknown command');
         break;
     }
   }
 });
+
+// New route to get all boards
+app.get('/api/boards', (req, res) => {
+  logger.debug('Fetching all boards');
+  try {
+    const boards = fs.readdirSync(BOARDS_DIR)
+      .filter(file => file.endsWith('-board.json'))
+      .map(file => {
+        const board = JSON.parse(fs.readFileSync(path.join(BOARDS_DIR, file), 'utf8'));
+        return {
+          id: board.id,
+          title: board.title,
+          createdBy: board.createdBy,
+          lastUpdated: board.lastUpdated
+        };
+      })
+      .sort((a, b) => b.lastUpdated - a.lastUpdated);
+    logger.info('Boards fetched successfully', { count: boards.length });
+    res.json(boards);
+  } catch (error) {
+    logger.error('Failed to fetch boards', { error: error.message });
+    res.status(500).json({ error: 'Failed to load boards' });
+  }
+});
+
+app.get('/api/board/:boardId', (req, res) => {
+  const boardId = req.params.boardId;
+  logger.debug('Attempting to load board', { boardId });
+  
+  try {
+    const board = loadBoard(boardId);
+    
+    if (!board) {
+      logger.warn('Board not found', { boardId });
+      return res.status(404).json({ error: 'Board not found' });
+    }
+    
+    logger.info('Board loaded successfully', { 
+      boardId, 
+      title: board.title,
+      path: getBoardPath(boardId)
+    });
+    res.json(board);
+  } catch (error) {
+    logger.error('Error loading board', { 
+      boardId, 
+      error: error.message,
+      stack: error.stack 
+    });
+    res.status(500).json({ error: 'Failed to load board' });
+  }
+});
+
+// Board modification routes
+app.post('/api/board/:userId/set-cell', (req, res) => {
+  try {
+    const { row, col, content } = req.body;
+    const board = loadBoard(req.params.userId);
+    
+    if (!board) {
+      return res.status(404).json({ error: 'Board not found' });
+    }
+    
+    if (content.toLowerCase().startsWith('image:')) {
+      const imageUrl = content.slice(6).trim();
+      if (!isValidImageUrl(imageUrl)) {
+        return res.status(400).json({ error: 'Invalid image URL' });
+      }
+      board.cells[row][col].value = content;
+    } else {
+      board.cells[row][col].value = content;
+    }
+    
+    saveBoard(board);
+    res.json(board);
+  } catch (error) {
+    logger.error('Failed to update cell', { error: error.message });
+    res.status(500).json({ error: 'Failed to update cell' });
+  }
+});
+
+app.post('/api/board/:userId/mark-cell', (req, res) => {
+  try {
+    const { row, col } = req.body;
+    const board = loadBoard(req.params.userId);
+    
+    if (!board) {
+      return res.status(404).json({ error: 'Board not found' });
+    }
+    
+    board.cells[row][col].marked = true;
+    saveBoard(board);
+    res.json(board);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to mark cell' });
+  }
+});
+
+// Add this with your other routes
+app.post('/api/logs', (req, res) => {
+  const { timestamp, level, message, data } = req.body;
+  logger.info('Frontend log received', { timestamp, level, message, data });
+  res.sendStatus(200);
+});
+
+// Add this route handler after your other routes
+app.get('/board/:boardId', (req, res) => {
+  logger.debug('Serving board page', { boardId: req.params.boardId });
+  res.sendFile(path.join(__dirname, '../public/board.html'));
+});
+
+function isValidImageUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return /\.(jpg|jpeg|png|gif|webp)$/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
 
 // Start the server and bot
 app.listen(PORT, () => console.log(`Server is running on http://localhost:${PORT}`));

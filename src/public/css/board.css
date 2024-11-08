@@ -1,0 +1,116 @@
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-unit);
+  margin-bottom: var(--spacing-unit);
+}
+
+.back-link {
+  color: var(--accent-color);
+  text-decoration: none;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.back-link:hover {
+  text-decoration: underline;
+}
+
+.grid-container {
+  flex-grow: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: var(--spacing-unit);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: clamp(4px, 1vw, 10px);
+  width: min(95vw, 95vh, 800px);
+  aspect-ratio: 1;
+}
+
+.cell {
+  position: relative;
+  background: var(--cell-background);
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 5px;
+  aspect-ratio: 1;
+  font-size: clamp(12px, 2.5vw, 18px);
+  word-break: break-word;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.cell:hover {
+  transform: scale(1.02);
+}
+
+.cell-label {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  font-size: clamp(10px, 1.5vw, 14px);
+  color: var(--secondary-color);
+  font-weight: bold;
+}
+
+.cell.marked::before,
+.cell.marked::after {
+  content: '';
+  position: absolute;
+  width: 140%;
+  height: 3px;
+  background-color: var(--marked-color);
+  top: 50%;
+  left: -20%;
+}
+
+.cell.marked::before {
+  transform: rotate(45deg);
+}
+
+.cell.marked::after {
+  transform: rotate(-45deg);
+}
+
+.cell img {
+  max-width: 90%;
+  max-height: 90%;
+  object-fit: contain;
+}
+
+.context-menu {
+  display: none;
+  position: fixed;
+  background: var(--cell-background);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  padding: 0.5rem;
+  z-index: 1000;
+}
+
+.context-menu button {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.context-menu button:hover {
+  background: var(--background-color);
+}

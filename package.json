@@ -4,7 +4,9 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node src/private/server.js"
+    "start": "node src/private/server.js",
+    "start:prod": "LOG_LEVEL=INFO node src/private/server.js",
+    "start:debug": "LOG_LEVEL=DEBUG node src/private/server.js"
   },
   "keywords": [],
   "author": "",

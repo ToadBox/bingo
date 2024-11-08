@@ -1,5 +1,9 @@
 {
-  "title": "Trump #2",
+  "id": "server-01",
+  "createdBy": "ToadBox",
+  "createdAt": 1731090835322,
+  "lastUpdated": 1731090835323,
+  "title": "Server Trump #2",
   "cells": [
     [
       {
