@@ -26,12 +26,16 @@
   <script type="module">
     import { fetchBoard, setCell, toggleMark } from '/js/api.js';
     import Logger from '/js/logger.js';
+    import { initTheme } from '/js/theme.js';
 
     const gridElement = document.getElementById('grid');
     const titleElement = document.getElementById('title');
     const contextMenu = document.getElementById('contextMenu');
     const boardId = window.location.pathname.split('/').pop();
     let activeCell = null;
+
+    // Initialize theme
+    initTheme();
 
     async function updateBoard() {
       Logger.info('Updating board', { boardId });

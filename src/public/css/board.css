@@ -8,14 +8,22 @@
 .back-link {
   color: var(--accent-color);
   text-decoration: none;
-  font-size: 1.1rem;
+  font-size: 2rem;
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  transition: background-color 0.2s ease;
 }
 
 .back-link:hover {
-  text-decoration: underline;
+  text-decoration: none;
+  background: var(--card-bg-hover);
+}
+
+.back-link:visited {
+  color: var(--accent-color);
 }
 
 .grid-container {
@@ -36,9 +44,10 @@
 
 .cell {
   position: relative;
-  background: var(--cell-background);
+  background: var(--card-bg);
+  color: var(--text-color);
   border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -49,11 +58,11 @@
   word-break: break-word;
   overflow: hidden;
   cursor: pointer;
-  transition: transform 0.2s ease;
+  transition: background-color 0.2s ease;
 }
 
 .cell:hover {
-  transform: scale(1.02);
+  background: var(--card-bg-hover);
 }
 
 .cell-label {
@@ -71,7 +80,7 @@
   position: absolute;
   width: 140%;
   height: 3px;
-  background-color: var(--marked-color);
+  background-color: var(--accent-color);
   top: 50%;
   left: -20%;
 }
@@ -93,9 +102,10 @@
 .context-menu {
   display: none;
   position: fixed;
-  background: var(--cell-background);
+  background: var(--card-bg);
+  color: var(--text-color);
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   padding: 0.5rem;
   z-index: 1000;
 }
@@ -106,11 +116,13 @@
   padding: 0.5rem 1rem;
   border: none;
   background: none;
+  color: var(--text-color);
   text-align: left;
   cursor: pointer;
   border-radius: 4px;
+  transition: background-color 0.2s ease;
 }
 
 .context-menu button:hover {
-  background: var(--background-color);
+  background: var(--card-bg-hover);
 }

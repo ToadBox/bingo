@@ -2,7 +2,7 @@
   "id": "user-202131361748877312",
   "createdBy": "triggermoke",
   "createdAt": 1731093296015,
-  "lastUpdated": 1731094528064,
+  "lastUpdated": 1731098316677,
   "title": "4 year gorp board",
   "cells": [
     [
@@ -46,7 +46,7 @@
       {
         "label": "C2",
         "value": "",
-        "marked": false
+        "marked": true
       },
       {
         "label": "D2",

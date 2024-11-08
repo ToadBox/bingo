@@ -14,6 +14,8 @@ const express = require('express');
 const { Client, GatewayIntentBits, SlashCommandBuilder } = require('discord.js');
 const fs = require('fs');
 const logger = require('./logger');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 
 const app = express();
 const PORT = 3000;
@@ -350,7 +352,8 @@ app.get('/api/boards', (req, res) => {
           id: board.id,
           title: board.title,
           createdBy: board.createdBy,
-          lastUpdated: board.lastUpdated
+          lastUpdated: board.lastUpdated,
+          cells: board.cells
         };
       })
       .sort((a, b) => b.lastUpdated - a.lastUpdated);
@@ -456,6 +459,25 @@ function isValidImageUrl(url) {
     return false;
   }
 }
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100 // limit each IP to 100 requests per windowMs
+});
+
+app.use('/api/', apiLimiter);
+
+app.use((req, res, next) => {
+  // Static assets
+  if (req.url.match(/\.(css|js|jpg|png|gif)$/)) {
+    res.setHeader('Cache-Control', 'public, max-age=3600'); // 1 hour
+  } else {
+    res.setHeader('Cache-Control', 'no-cache');
+  }
+  next();
+});
+
+app.use(helmet());
 
 // Start the server and bot
 app.listen(PORT, () => console.log(`Server is running on http://localhost:${PORT}`));
