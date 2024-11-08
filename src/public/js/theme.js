@@ -1,4 +1,7 @@
 export function initTheme() {
+  // Check if theme toggle already exists
+  if (document.querySelector('.theme-toggle')) return;
+  
   // Check if user has a saved preference
   const savedTheme = localStorage.getItem('theme');
   
@@ -10,11 +13,17 @@ export function initTheme() {
     document.documentElement.setAttribute('data-theme', savedTheme);
   }
   
-  // Create and append the theme toggle button
+  // Create theme toggle button
   const themeToggle = document.createElement('button');
   themeToggle.className = 'theme-toggle';
   themeToggle.innerHTML = document.documentElement.getAttribute('data-theme') === 'light' ? '🌙' : '☀️';
   themeToggle.setAttribute('aria-label', 'Toggle theme');
+  
+  // Position the toggle button
+  themeToggle.style.position = 'fixed';
+  themeToggle.style.bottom = '1rem';
+  themeToggle.style.right = '1rem';
+  
   document.body.appendChild(themeToggle);
   
   // Add click handler
@@ -25,15 +34,5 @@ export function initTheme() {
     document.documentElement.setAttribute('data-theme', newTheme);
     localStorage.setItem('theme', newTheme);
     themeToggle.innerHTML = newTheme === 'light' ? '🌙' : '☀️';
-  });
-
-  // Listen for system theme changes
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-    // Only update if user hasn't set a preference
-    if (!localStorage.getItem('theme')) {
-      const newTheme = e.matches ? 'dark' : 'light';
-      document.documentElement.setAttribute('data-theme', newTheme);
-      themeToggle.innerHTML = newTheme === 'light' ? '🌙' : '☀️';
-    }
   });
 } 
