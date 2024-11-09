@@ -6,8 +6,8 @@ console.log('Looking for .env file at:', path.join(__dirname, '.env'));
 console.log('Environment variables loaded');
 console.log('Current directory:', __dirname);
 console.log('Env file contents:', {
-  token: process.env.DISCORD_TOKEN,
-  guildId: process.env.TOADBOX_ID
+  token: process.env.TOKEN,
+  guildId: process.env.TOADBOX
 });
 
 const express = require('express');
@@ -503,4 +503,4 @@ app.use('/images/cells', express.static(path.join(__dirname, '../public/images/c
 
 // Start the server and bot
 app.listen(PORT, () => console.log(`Server is running on http://localhost:${PORT}`));
-client.login(process.env.DISCORD_TOKEN); 
+client.login(process.env.TOKEN); 
