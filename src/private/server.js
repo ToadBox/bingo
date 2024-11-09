@@ -39,17 +39,23 @@ class Server {
         
         // Security and parsing middleware
         this.app.use(express.json());
-        this.app.use(helmet({
+        const helmetConfig = {
             contentSecurityPolicy: {
                 directives: {
                     defaultSrc: ["'self'"],
-                    scriptSrc: ["'self'"],
-                    styleSrc: ["'self'"],
+                    scriptSrc: [
+                        "'self'",
+                        "https://static.cloudflareinsights.com",
+                        "'unsafe-inline'"  // Only if absolutely necessary
+                    ],
+                    styleSrc: ["'self'", "'unsafe-inline'"],
                     imgSrc: ["'self'", "data:", "https:"],
-                    connectSrc: ["'self'"],
+                    connectSrc: ["'self'", "https://cloudflareinsights.com"],
+                    workerSrc: ["'self'", "blob:"]
                 }
             }
-        }));
+        };
+        this.app.use(helmet(helmetConfig));
         
         // Rate limiting
         const apiLimiter = rateLimit({
