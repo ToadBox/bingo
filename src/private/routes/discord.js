@@ -21,12 +21,25 @@ class DiscordCommands {
                 .addSubcommand(subcommand =>
                     subcommand
                         .setName('set')
-                        .setDescription('Set text in a bingo cell')
+                        .setDescription('Set content in a bingo cell')
                         .addStringOption(option =>
-                            option.setName('cell').setDescription('Cell to update (e.g., A4)').setRequired(true)
+                            option.setName('cell')
+                            .setDescription('Cell to update (e.g., A4)')
+                            .setRequired(true)
                         )
                         .addStringOption(option =>
-                            option.setName('text').setDescription('Text to set in the cell').setRequired(true)
+                            option.setName('type')
+                            .setDescription('Type of content to set')
+                            .setRequired(true)
+                            .addChoices(
+                                { name: 'Text', value: 'text' },
+                                { name: 'Image URL', value: 'image' }
+                            )
+                        )
+                        .addStringOption(option =>
+                            option.setName('content')
+                            .setDescription('Text or image URL to set in the cell')
+                            .setRequired(true)
                         )
                 )
                 .addSubcommand(subcommand =>
@@ -104,12 +117,26 @@ class DiscordCommands {
         switch(subcommand) {
             case 'set':
                 const cell = interaction.options.getString('cell');
-                const text = interaction.options.getString('text');
+                const type = interaction.options.getString('type');
+                const content = interaction.options.getString('content');
                 const { row, col } = boardService.parseCell(cell);
                 
                 await interaction.deferReply();
-                await boardService.setCellContent(board, row, col, text);
-                await interaction.editReply(`Set cell ${cell} to "${text}"`);
+                try {
+                    if (type === 'image') {
+                        // Validate URL format
+                        if (!content.match(/^https?:\/\/.*\.(jpg|jpeg|png)(\?.*)?$/i)) {
+                            throw new Error('Invalid image URL. Must end with .jpg, .jpeg, or .png');
+                        }
+                        await boardService.setCellContent(board, row, col, content);
+                        await interaction.editReply(`Set image in cell ${cell}. The image should appear shortly.`);
+                    } else {
+                        await boardService.setCellContent(board, row, col, content);
+                        await interaction.editReply(`Set cell ${cell} to "${content}"`);
+                    }
+                } catch (error) {
+                    await interaction.editReply(`Failed to set ${type}: ${error.message}`);
+                }
                 break;
 
             case 'mark':

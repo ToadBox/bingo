@@ -82,6 +82,7 @@ class BoardService {
     async setCellContent(board, row, col, content) {
         try {
             if (content.match(/^https?:\/\/.*\.(jpg|jpeg|png)(\?.*)?$/i)) {
+                logger.debug('Processing image URL', { url: content });
                 const localPath = await downloadAndSaveImage(content);
                 board.cells[row][col].value = `image:${localPath}`;
             } else {
