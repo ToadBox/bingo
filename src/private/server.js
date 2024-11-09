@@ -34,6 +34,9 @@ class Server {
     }
 
     setupMiddleware() {
+        // Trust proxy
+        this.app.set('trust proxy', 1);
+        
         // Security and parsing middleware
         this.app.use(express.json());
         this.app.use(helmet({
@@ -51,7 +54,10 @@ class Server {
         // Rate limiting
         const apiLimiter = rateLimit({
             windowMs: 15 * 60 * 1000, // 15 minutes
-            max: 100
+            max: 100,
+            standardHeaders: true,
+            legacyHeaders: false,
+            trustProxy: true
         });
         this.app.use('/api/', apiLimiter);
 

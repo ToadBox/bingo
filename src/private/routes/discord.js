@@ -149,6 +149,17 @@ class DiscordCommands {
                 break;
         }
     }
+
+    async register(client) {
+        try {
+            const commands = this.setupCommands();
+            await client.application.commands.set(commands);
+            logger.info('Discord commands registered successfully');
+        } catch (error) {
+            logger.error('Failed to register Discord commands', { error: error.message });
+            throw error;
+        }
+    }
 }
 
 module.exports = new DiscordCommands();
