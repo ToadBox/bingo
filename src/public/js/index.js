@@ -7,15 +7,21 @@ import { initTheme } from '/js/theme.js';
 initTheme();
 
 async function loadBoards() {
-    Logger.info('Loading boards');
     try {
-        const boards = await fetchBoards();
+        const response = await fetch('/api/boards');
+        if (!response.ok) {
+            if (response.status === 429) {
+                throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+            }
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const boards = await response.json();
         Logger.debug('Boards loaded successfully', { count: boards.length });
         updateBoardsDisplay(boards);
     } catch (error) {
-        Logger.error('Failed to load boards', { error: error.message });
-        document.getElementById('boards').innerHTML = 
-            '<p class="error-state">Error loading boards. Please try again later.</p>';
+        console.error('Failed to load boards:', error);
+        document.querySelector('.loading').textContent = 
+            'Failed to load boards. Please try refreshing the page.';
     }
 }
 

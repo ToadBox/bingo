@@ -78,6 +78,7 @@ class Server {
         const apiLimiter = rateLimit({
             windowMs: 15 * 60 * 1000,
             max: 100,
+            message: 'Too many requests from this IP, please try again later.',
             standardHeaders: true,
             legacyHeaders: false,
             trustProxy: true,
@@ -108,6 +109,13 @@ class Server {
             } else {
                 res.setHeader('Cache-Control', 'no-cache');
             }
+            next();
+        });
+
+        // Add CORS middleware for specific routes if needed
+        this.app.use((req, res, next) => {
+            res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+            res.header('Access-Control-Allow-Origin', '*');
             next();
         });
     }
