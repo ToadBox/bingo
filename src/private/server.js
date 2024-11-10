@@ -12,6 +12,8 @@ const constants = require('./config/constants');
 class Server {
     constructor() {
         this.app = express();
+        this.isShuttingDown = false;
+        this.connections = new Set();
         
         // Only initialize Discord client if not in offline mode
         if (!constants.OFFLINE_MODE) {
@@ -31,6 +33,8 @@ class Server {
         if (!constants.OFFLINE_MODE) {
             this.setupDiscordBot();
         }
+
+        this.setupShutdownHandlers();
     }
 
     setupMiddleware() {
@@ -45,30 +49,56 @@ class Server {
                     defaultSrc: ["'self'"],
                     scriptSrc: [
                         "'self'",
+                        "'unsafe-inline'",
                         "https://static.cloudflareinsights.com",
-                        "'unsafe-inline'"  // Only if absolutely necessary
+                        "https://*.cloudflareinsights.com",
+                        "https://*.bingo.toadbox.net"
                     ],
                     styleSrc: ["'self'", "'unsafe-inline'"],
                     imgSrc: ["'self'", "data:", "https:"],
-                    connectSrc: ["'self'", "https://cloudflareinsights.com"],
-                    workerSrc: ["'self'", "blob:"]
+                    connectSrc: [
+                        "'self'",
+                        "https://*.cloudflareinsights.com",
+                        "https://*.bingo.toadbox.net"
+                    ],
+                    workerSrc: ["'self'", "blob:"],
+                    frameSrc: ["'none'"],
+                    objectSrc: ["'none'"],
+                    baseUri: ["'self'"]
                 }
-            }
+            },
+            crossOriginEmbedderPolicy: true,
+            crossOriginOpenerPolicy: true,
+            crossOriginResourcePolicy: { policy: "same-site" },
+            referrerPolicy: { policy: "strict-origin-when-cross-origin" }
         };
         this.app.use(helmet(helmetConfig));
         
-        // Rate limiting
+        // Improved rate limiting
         const apiLimiter = rateLimit({
-            windowMs: 15 * 60 * 1000, // 15 minutes
+            windowMs: 15 * 60 * 1000,
             max: 100,
             standardHeaders: true,
             legacyHeaders: false,
-            trustProxy: true
+            trustProxy: true,
+            skip: (req) => req.ip === '127.0.0.1',
+            keyGenerator: (req) => req.ip + req.path
         });
         this.app.use('/api/', apiLimiter);
 
         // Static files and caching
-        this.app.use(express.static(path.join(__dirname, '../public')));
+        this.app.use(express.static(path.join(__dirname, '../public'), {
+            setHeaders: (res, path) => {
+                if (path.endsWith('.js')) {
+                    res.setHeader('Content-Type', 'application/javascript');
+                }
+                if (path.match(/\.(css|js|jpg|png|gif)$/)) {
+                    res.setHeader('Cache-Control', 'public, max-age=3600');
+                } else {
+                    res.setHeader('Cache-Control', 'no-cache');
+                }
+            }
+        }));
         this.app.use('/images/cells', express.static(path.join(__dirname, '../public/images/cells')));
         
         // Cache control
@@ -83,6 +113,20 @@ class Server {
     }
 
     setupRoutes() {
+        // Add request logging middleware
+        this.app.use((req, res, next) => {
+            const start = Date.now();
+            res.on('finish', () => {
+                logger.debug('Request completed', {
+                    method: req.method,
+                    path: req.path,
+                    status: res.statusCode,
+                    duration: Date.now() - start
+                });
+            });
+            next();
+        });
+
         // API routes
         this.app.use('/api', apiRoutes);
 
@@ -92,14 +136,23 @@ class Server {
             res.sendFile(path.join(__dirname, '../public/board.html'));
         });
 
-        // Error handling middleware
+        // Improved error handling
         this.app.use((err, req, res, next) => {
-            logger.error('Unhandled error', { 
+            const status = err.status || 500;
+            const message = status === 500 ? 'Internal server error' : err.message;
+
+            logger.error('Request error', {
                 error: err.message,
                 stack: err.stack,
-                path: req.path
+                path: req.path,
+                method: req.method,
+                status
             });
-            res.status(500).json({ error: 'Internal server error' });
+
+            res.status(status).json({
+                error: message,
+                requestId: req.id
+            });
         });
     }
 
@@ -126,14 +179,54 @@ class Server {
         });
     }
 
+    setupShutdownHandlers() {
+        // Track connections
+        this.app.on('connection', connection => {
+            this.connections.add(connection);
+            connection.on('close', () => this.connections.delete(connection));
+        });
+
+        // Graceful shutdown handler
+        const shutdown = async (signal) => {
+            if (this.isShuttingDown) return;
+            this.isShuttingDown = true;
+
+            logger.info(`Received ${signal}, starting graceful shutdown`);
+
+            // Stop accepting new connections
+            this.server?.close(() => {
+                logger.info('HTTP server closed');
+            });
+
+            // Close existing connections
+            this.connections.forEach(conn => conn.end());
+            this.connections.clear();
+
+            // Disconnect Discord bot if running
+            if (!constants.OFFLINE_MODE && this.client) {
+                await this.client.destroy();
+                logger.info('Discord bot disconnected');
+            }
+
+            // Allow ongoing requests to finish (max 30s)
+            setTimeout(() => {
+                logger.error('Forcing shutdown after timeout');
+                process.exit(1);
+            }, 30000);
+
+            process.exit(0);
+        };
+
+        // Register shutdown handlers
+        process.on('SIGTERM', () => shutdown('SIGTERM'));
+        process.on('SIGINT', () => shutdown('SIGINT'));
+    }
+
     async start() {
         try {
-            // Start Express server
-            await new Promise(resolve => {
-                this.app.listen(constants.PORT, () => {
-                    logger.info(`Server is running on http://localhost:${constants.PORT} ${constants.OFFLINE_MODE ? '(OFFLINE MODE)' : ''}`);
-                    resolve();
-                });
+            // Start Express server with server reference
+            this.server = this.app.listen(constants.PORT, () => {
+                logger.info(`Server is running on http://localhost:${constants.PORT} ${constants.OFFLINE_MODE ? '(OFFLINE MODE)' : ''}`);
             });
 
             // Start Discord bot only if not in offline mode

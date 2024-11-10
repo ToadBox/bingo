@@ -38,7 +38,7 @@ router.get('/boards', async (req, res) => {
 // Get specific board
 router.get('/board/:boardId', async (req, res) => {
     try {
-        const board = boardService.loadBoard(req.params.boardId);
+        const board = await boardService.loadBoard(req.params.boardId);
         if (!board) {
             return res.status(404).json({ error: 'Board not found' });
         }
@@ -46,7 +46,8 @@ router.get('/board/:boardId', async (req, res) => {
     } catch (error) {
         logger.error('Error loading board', { 
             boardId: req.params.boardId, 
-            error: error.message 
+            error: error.message,
+            stack: error.stack
         });
         res.status(500).json({ error: 'Failed to load board' });
     }

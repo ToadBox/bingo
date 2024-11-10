@@ -16,8 +16,12 @@ async function updateBoard() {
         Logger.debug('Board fetched successfully', { boardId, title: board.title });
         renderBoard(board);
     } catch (error) {
-        Logger.error('Failed to fetch board', { boardId, error: error.message });
-        titleElement.textContent = 'Error Loading Board';
+        Logger.error('Failed to fetch board', { 
+            boardId, 
+            error: error.message,
+            response: error.response
+        });
+        titleElement.textContent = `Error Loading Board: ${error.message}`;
     }
 }
 
