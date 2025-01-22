@@ -41,7 +41,7 @@ class BoardService {
 
         // In unified mode, always return the server board path
         if (this.mode === BOARD_MODES.UNI) {
-            return path.join(BOARDS_DIR, `server-${UNIFIED_BOARD_ID}-board.json`);
+            return path.join(BOARDS_DIR, `${UNIFIED_BOARD_ID}-board.json`);
         }
 
         // Existing path logic for individual mode
