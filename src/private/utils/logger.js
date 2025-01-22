@@ -9,7 +9,8 @@ const LOG_LEVELS = {
 };
 
 const isDevelopment = process.env.NODE_ENV !== 'production';
-const currentLogLevel = LOG_LEVELS[process.env.LOG_LEVEL || (isDevelopment ? 'DEBUG' : 'INFO')];
+const defaultLogLevel = isDevelopment ? 'DEBUG' : 'INFO';
+const currentLogLevel = LOG_LEVELS[process.env.LOG_LEVEL || defaultLogLevel];
 
 const LOGS_DIR = path.join(__dirname, 'logs');
 if (!fs.existsSync(LOGS_DIR)) {

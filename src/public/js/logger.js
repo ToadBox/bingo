@@ -8,7 +8,7 @@ class Logger {
 
   static currentLevel = Logger.LEVELS[
     window.localStorage.getItem('logLevel') || 
-    (window.location.hostname === 'localhost' ? 'DEBUG' : 'INFO')
+    (process.env.NODE_ENV === 'development' ? 'DEBUG' : 'INFO')
   ];
 
   static formatMessage(level, message, data = null) {
