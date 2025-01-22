@@ -1,5 +1,10 @@
 const path = require('path');
 
+const BOARD_MODES = {
+    UNI: 'unified',
+    IND: 'individual'
+};
+
 module.exports = {
     // General Variables
     PORT: process.env.PORT || 3000,
@@ -19,4 +24,8 @@ module.exports = {
     ALLOWED_MIME_TYPES: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
     MAX_FILE_SIZE: 50 * 1024 * 1024, // 50MB
     COMPRESSION_THRESHOLD: 1024 * 1024, // 1MB
+
+    BOARD_MODES,
+    BOARD_MODE: process.env.BOARD_MODE || BOARD_MODES.UNI,
+    UNIFIED_BOARD_ID: 'server-01'
 };

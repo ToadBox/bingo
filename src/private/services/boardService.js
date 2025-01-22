@@ -8,7 +8,10 @@ const {
     BOARDS_DIR,
     COLUMNS,
     BOARD_SIZE,
-    CACHE_TTL
+    CACHE_TTL,
+    BOARD_MODES,
+    BOARD_MODE,
+    UNIFIED_BOARD_ID
 } = require('../config/constants');
 
 // Initialize cache with automatic key deletion
@@ -20,10 +23,15 @@ const boardCache = new NodeCache({
 
 class BoardService {
     constructor() {
+        logger.info('Initializing BoardService', { 
+            mode: this.mode,
+            boardsDir: BOARDS_DIR 
+        });
         // Ensure boards directory exists
         if (!fsSync.existsSync(BOARDS_DIR)) {
             fsSync.mkdirSync(BOARDS_DIR, { recursive: true });
         }
+        this.mode = BOARD_MODE;
     }
 
     getBoardPath(boardId) {
@@ -31,7 +39,12 @@ class BoardService {
             throw new Error('Invalid board ID');
         }
 
-        // Strict sanitization of boardId
+        // In unified mode, always return the server board path
+        if (this.mode === BOARD_MODES.UNI) {
+            return path.join(BOARDS_DIR, `server-${UNIFIED_BOARD_ID}-board.json`);
+        }
+
+        // Existing path logic for individual mode
         const sanitizedId = boardId.replace(/[^a-zA-Z0-9\-_]/g, '');
         const prefix = sanitizedId.startsWith('server-') ? 'server-' : 'user-';
         const cleanId = sanitizedId.replace(/^(user-|server-)/, '');
@@ -68,7 +81,17 @@ class BoardService {
     }
 
     async loadBoard(boardId) {
+        logger.debug('Loading board', { 
+            boardId, 
+            mode: this.mode,
+            isCached: boardCache.has(boardId)
+        });
         try {
+            // In unified mode, always load the server board
+            if (this.mode === BOARD_MODES.UNI) {
+                boardId = UNIFIED_BOARD_ID;
+            }
+
             // Check cache first
             const cached = boardCache.get(boardId);
             if (cached) {
@@ -111,6 +134,12 @@ class BoardService {
     }
 
     async saveBoard(board) {
+        logger.debug('Saving board', { 
+            boardId: board.id,
+            title: board.title,
+            cellCount: board.cells.flat().filter(cell => cell.value).length,
+            markedCount: board.cells.flat().filter(cell => cell.marked).length
+        });
         if (!this.isValidBoard(board)) {
             throw new Error('Invalid board data');
         }
@@ -162,8 +191,14 @@ class BoardService {
     }
 
     async getAllBoards() {
-        logger.debug('Fetching all boards');
+        logger.debug('Fetching boards');
         try {
+            if (this.mode === BOARD_MODES.UNI) {
+                // In unified mode, only return the server board
+                const serverBoard = await this.loadBoard(UNIFIED_BOARD_ID);
+                return serverBoard ? [serverBoard] : [];
+            }
+
             const files = await fs.readdir(BOARDS_DIR);
             const boards = await Promise.all(
                 files

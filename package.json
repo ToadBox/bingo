@@ -5,10 +5,10 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node src/private/server.js",
-    "start:offline": "OFFLINE_MODE=true node src/private/server.js",
-    "start:offline:debug": "OFFLINE_MODE=true LOG_LEVEL=DEBUG node src/private/server.js",
-    "start:prod": "LOG_LEVEL=INFO node src/private/server.js",
-    "start:debug": "LOG_LEVEL=DEBUG node src/private/server.js"
+    "start:uni": "BOARD_MODE=unified node src/private/server.js",
+    "start:ind": "BOARD_MODE=individual node src/private/server.js",
+    "start:uni:debug": "BOARD_MODE=unified LOG_LEVEL=DEBUG node src/private/server.js",
+    "start:ind:debug": "BOARD_MODE=individual LOG_LEVEL=DEBUG node src/private/server.js"
   },
   "keywords": [],
   "author": "",

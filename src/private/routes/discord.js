@@ -1,6 +1,7 @@
 const { SlashCommandBuilder } = require('discord.js');
 const boardService = require('../services/boardService');
 const logger = require('../utils/logger');
+const constants = require('../config/constants');
 
 class DiscordCommands {
     setupCommands() {
@@ -80,28 +81,36 @@ class DiscordCommands {
     async handleCommand(interaction) {
         if (!interaction.isCommand() || interaction.commandName !== 'bingo') return;
         
-        const userId = interaction.user.id;
-        const userName = interaction.user.username;
+        const commandContext = {
+            userId: interaction.user.id,
+            userName: interaction.user.username,
+            subcommand: interaction.options.getSubcommand(),
+            guildId: interaction.guildId,
+            channelId: interaction.channelId
+        };
         
-        logger.info('Bingo command received', {
-            userId,
-            userName,
-            subcommand: interaction.options.getSubcommand()
-        });
+        logger.info('Bingo command received', commandContext);
         
-        // Load or create user's board
-        let board = boardService.loadBoard(userId);
-        if (!board) {
-            board = boardService.createNewBoard(userId, userName);
-            boardService.saveBoard(board);
-        }
-
         try {
+            // In unified mode, always use the server board
+            const boardId = boardService.mode === constants.BOARD_MODES.UNI 
+                ? constants.UNIFIED_BOARD_ID 
+                : interaction.user.id;
+
+            let board = await boardService.loadBoard(boardId);
+            if (!board) {
+                if (boardService.mode === constants.BOARD_MODES.UNI) {
+                    throw new Error('Server board not found');
+                }
+                board = boardService.createNewBoard(interaction.user.id, interaction.user.username);
+                await boardService.saveBoard(board);
+            }
+
             await this.handleSubcommand(interaction, board);
         } catch (error) {
             logger.error('Error handling command', { 
                 error: error.message,
-                userId,
+                userId: interaction.user.id,
                 command: interaction.options.getSubcommand()
             });
             await interaction.reply({ 

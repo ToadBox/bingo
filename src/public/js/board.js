@@ -63,4 +63,4 @@ function renderBoard(board) {
 
 // Initial load and periodic refresh
 updateBoard();
-setInterval(updateBoard, 5000); 
+setInterval(updateBoard, 10000); 

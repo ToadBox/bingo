@@ -2,6 +2,14 @@ const express = require('express');
 const router = express.Router();
 const boardService = require('../services/boardService');
 const logger = require('../utils/logger');
+const rateLimit = require('express-rate-limit');
+
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100 // limit each IP to 100 requests per windowMs
+});
+
+router.use(apiLimiter);
 
 // Get all boards
 router.get('/boards', async (req, res) => {
@@ -42,6 +50,8 @@ router.get('/board/:boardId', async (req, res) => {
         if (!board) {
             return res.status(404).json({ error: 'Board not found' });
         }
+        
+        res.set('Cache-Control', 'public, max-age=150'); // Cache for 2.5 minutes
         res.json(board);
     } catch (error) {
         logger.error('Error loading board', { 
@@ -95,6 +105,14 @@ router.post('/logs', (req, res) => {
     const { timestamp, level, message, data } = req.body;
     logger.info('Frontend log received', { timestamp, level, message, data });
     res.sendStatus(200);
+});
+
+router.get('/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        mode: boardService.mode,
+        timestamp: new Date().toISOString()
+    });
 });
 
 module.exports = router; 
