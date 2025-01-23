@@ -50,21 +50,27 @@ class Server {
                     scriptSrc: [
                         "'self'",
                         "'unsafe-inline'",
+                        "'unsafe-eval'",
                         "https://static.cloudflareinsights.com",
-                        "https://*.cloudflareinsights.com",
-                        "https://*.bingo.toadbox.net"
+                        "https://*.cloudflareinsights.com"
                     ],
                     styleSrc: ["'self'", "'unsafe-inline'"],
                     imgSrc: [
                         "'self'", 
                         "data:", 
-                        "https:",
-                        "https://earthviewinc.com"
+                        "https://earthviewinc.com",
+                        "https://*.earthviewinc.com"
                     ],
                     connectSrc: [
                         "'self'",
                         "https://*.cloudflareinsights.com",
                         "https://*.bingo.toadbox.net"
+                    ],
+                    scriptSrcElem: [
+                        "'self'",
+                        "'unsafe-inline'",
+                        "https://static.cloudflareinsights.com",
+                        "https://*.cloudflareinsights.com"
                     ],
                     workerSrc: ["'self'", "blob:"],
                     frameSrc: ["'none'"],
