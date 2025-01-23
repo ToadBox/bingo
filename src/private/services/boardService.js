@@ -30,9 +30,18 @@ const CACHE_CONFIG = {
 const ALLOWED_UNIFIED_COMMANDS = ['set', 'clear', 'mark', 'unmark'];
 
 class BoardService {
-    constructor(mode = BOARD_MODES.STD) {
-        this.mode = mode;
+    constructor(mode = BOARD_MODE) {
+        logger.info('Initializing BoardService', { 
+            mode,
+            boardsDir: BOARDS_DIR,
+            defaultMode: BOARD_MODE,
+            envMode: process.env.BOARD_MODE
+        });
+
+        this.mode = process.env.BOARD_MODE || mode;
         this.environment = process.env.NODE_ENV || 'development';
+        
+        // Initialize cache config
         this.cacheConfig = CACHE_CONFIG[this.environment === 'production' ? 'PROD' : 'DEBUG'];
         
         // Initialize LRU cache with config
@@ -46,18 +55,19 @@ class BoardService {
         // Add file descriptor cache
         this.fileHandles = new Map();
         
-        // Pre-load file handles for better performance
-        this._initializeFileHandles();
-
-        logger.info('Initializing BoardService', { 
-            mode: this.mode,
-            boardsDir: BOARDS_DIR 
-        });
         // Ensure boards directory exists
         if (!fsSync.existsSync(BOARDS_DIR)) {
             fsSync.mkdirSync(BOARDS_DIR, { recursive: true });
             logger.info('Created boards directory', { path: BOARDS_DIR });
         }
+
+        logger.info('BoardService initialized', { 
+            mode: this.mode,
+            isUnified: this.mode === BOARD_MODES.UNI
+        });
+
+        // Pre-load file handles for better performance
+        this._initializeFileHandles();
     }
 
     getCacheConfig() {
