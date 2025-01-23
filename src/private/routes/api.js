@@ -102,8 +102,18 @@ router.post('/board/:userId/mark-cell', async (req, res) => {
 
 // Logging endpoint
 router.post('/logs', (req, res) => {
-    const { timestamp, level, message, data } = req.body;
-    logger.info('Frontend log received', { timestamp, level, message, data });
+    const { timestamp, level, message, data, path, userAgent } = req.body;
+    
+    logger.info('Frontend log received', { 
+        clientTimestamp: timestamp,
+        level,
+        message,
+        data,
+        clientPath: path,
+        userAgent,
+        ip: req.ip || req.connection?.remoteAddress
+    });
+    
     res.sendStatus(200);
 });
 

@@ -5,6 +5,9 @@ const BOARD_MODES = {
     IND: 'individual'
 };
 
+// Check if running in debug mode from npm scripts
+const isDebugMode = process.env.LOG_LEVEL === 'DEBUG';
+
 module.exports = {
     // General Variables
     PORT: process.env.PORT || 3000,
@@ -13,7 +16,7 @@ module.exports = {
     BOARDS_DIR: path.join(__dirname, '../boards'),
     IMAGES_DIR: path.join(__dirname, '../../public/images/cells'),
     DEFAULT_BOARD_TITLE: 'New Board, use /bingo title to change',
-    OFFLINE_MODE: process.env.OFFLINE_MODE === 'true',
+    OFFLINE_MODE: isDebugMode || process.env.OFFLINE_MODE === 'true',
     
     // Board Variables
     BOARD_SIZE: 5,

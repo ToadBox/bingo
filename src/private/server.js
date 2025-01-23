@@ -55,7 +55,12 @@ class Server {
                         "https://*.bingo.toadbox.net"
                     ],
                     styleSrc: ["'self'", "'unsafe-inline'"],
-                    imgSrc: ["'self'", "data:", "https:"],
+                    imgSrc: [
+                        "'self'", 
+                        "data:", 
+                        "https:",
+                        "https://earthviewinc.com"
+                    ],
                     connectSrc: [
                         "'self'",
                         "https://*.cloudflareinsights.com",
@@ -67,9 +72,9 @@ class Server {
                     baseUri: ["'self'"]
                 }
             },
-            crossOriginEmbedderPolicy: true,
+            crossOriginEmbedderPolicy: false,
             crossOriginOpenerPolicy: true,
-            crossOriginResourcePolicy: { policy: "same-site" },
+            crossOriginResourcePolicy: { policy: "cross-origin" },
             referrerPolicy: { policy: "strict-origin-when-cross-origin" }
         };
         this.app.use(helmet(helmetConfig));

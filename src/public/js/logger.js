@@ -7,8 +7,7 @@ class Logger {
   };
 
   static currentLevel = Logger.LEVELS[
-    window.localStorage.getItem('logLevel') || 
-    (process.env.NODE_ENV === 'development' ? 'DEBUG' : 'INFO')
+    window.localStorage.getItem('logLevel') || 'INFO'
   ];
 
   static formatMessage(level, message, data = null) {
@@ -39,16 +38,21 @@ class Logger {
   }
 
   static async sendToServer(logData) {
-    if (window.location.hostname !== 'localhost') {
-      try {
-        await fetch('/api/logs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(logData)
-        });
-      } catch (error) {
-        console.error('Failed to send log to server:', error);
-      }
+    try {
+      await fetch('/api/logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          timestamp: logData.timestamp,
+          level: logData.level,
+          message: logData.message,
+          data: logData.data,
+          path: window.location.pathname,
+          userAgent: window.navigator.userAgent
+        })
+      });
+    } catch (error) {
+      console.error('Failed to send log to server:', error);
     }
   }
 
@@ -72,13 +76,27 @@ class Logger {
         break;
     }
     
-    this.sendToServer(logData);
+    // Always send logs to server except for localhost
+    if (window.location.hostname !== 'localhost') {
+      this.sendToServer(logData);
+    }
   }
 
-  static error(message, data = null) { this.log('ERROR', message, data); }
-  static warn(message, data = null) { this.log('WARN', message, data); }
-  static info(message, data = null) { this.log('INFO', message, data); }
-  static debug(message, data = null) { this.log('DEBUG', message, data); }
+  static error(message, data = null) {
+    this.log('ERROR', message, data);
+  }
+
+  static warn(message, data = null) {
+    this.log('WARN', message, data);
+  }
+
+  static info(message, data = null) {
+    this.log('INFO', message, data);
+  }
+
+  static debug(message, data = null) {
+    this.log('DEBUG', message, data);
+  }
 
   static setLogLevel(level) {
     if (this.LEVELS.hasOwnProperty(level)) {
