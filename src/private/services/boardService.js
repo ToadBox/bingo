@@ -440,7 +440,7 @@ class BoardService {
     }
 
     getBoardId(requestedId) {
-        logger.debug('Getting board ID', { 
+        logger.info('Getting board ID', {
             requestedId,
             mode: this.mode,
             isUnified: this.mode === BOARD_MODES.UNI
@@ -450,7 +450,11 @@ class BoardService {
         if (this.mode === BOARD_MODES.UNI) {
             return UNIFIED_BOARD_ID;
         }
-        // In individual mode, use the requested ID
+
+        // For individual mode, validate and return the requested ID
+        if (!requestedId || typeof requestedId !== 'string') {
+            throw new Error('Invalid board ID requested');
+        }
         return requestedId;
     }
 }
