@@ -348,13 +348,27 @@ class BoardService {
             throw new Error(`Command '${command}' is not allowed in unified mode`);
         }
 
-        // Existing command handling logic
         switch (command.toLowerCase()) {
             case 'set':
-            case 'clear':
+                const [board, cell, type, content] = args;
+                const { row, col } = this.parseCell(cell);
+                return await this.setCellContent(board, row, col, content);
             case 'mark':
+                const [markBoard, markCell] = args;
+                const markPos = this.parseCell(markCell);
+                markBoard.cells[markPos.row][markPos.col].marked = true;
+                return await this.saveBoard(markBoard);
             case 'unmark':
-                return await this[`handle${command.charAt(0).toUpperCase() + command.slice(1)}`](...args);
+                const [unmarkBoard, unmarkCell] = args;
+                const unmarkPos = this.parseCell(unmarkCell);
+                unmarkBoard.cells[unmarkPos.row][unmarkPos.col].marked = false;
+                return await this.saveBoard(unmarkBoard);
+            case 'clear':
+                const [clearBoard, clearCell] = args;
+                const clearPos = this.parseCell(clearCell);
+                clearBoard.cells[clearPos.row][clearPos.col].value = '';
+                clearBoard.cells[clearPos.row][clearPos.col].marked = false;
+                return await this.saveBoard(clearBoard);
             default:
                 throw new Error(`Unknown command: ${command}`);
         }

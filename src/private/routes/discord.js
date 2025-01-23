@@ -194,13 +194,13 @@ class DiscordCommands {
                     });
 
                     if (this.boardService.mode === constants.BOARD_MODES.UNI && 
-                        !['show', 'help'].includes(subcommand)) {
+                        !this.boardService.isCommandAllowed(subcommand)) {
                         logger.info('Advanced operation attempted in unified mode', {
                             subcommand,
                             userId: interaction.user.id
                         });
                         await interaction.reply({
-                            content: '⚠️ Only basic board operations are available in unified mode.',
+                            content: '⚠️ Only basic board operations (set, clear, mark, unmark) are available in unified mode.',
                             ephemeral: true
                         });
                         return;
@@ -263,12 +263,14 @@ class DiscordCommands {
 
     async handleBasicOperation(interaction, board, operation) {
         const cell = interaction.options.getString('cell');
-        const value = interaction.options.getString('value');
+        const type = interaction.options.getString('type');
+        const content = interaction.options.getString('content');
 
         logger.info('Handling basic operation', {
             operation,
             cell,
-            value,
+            type,
+            content,
             boardId: board.id,
             userId: interaction.user.id
         });
@@ -276,26 +278,22 @@ class DiscordCommands {
         try {
             switch (operation) {
                 case 'set':
-                    await this.boardService.setCellValue(board, cell, value);
-                    logger.info('Cell value set', { cell, value, boardId: board.id });
-                    await interaction.reply(`Set cell ${cell} to "${value}"`);
+                    await this.boardService.handleCommand('set', board, cell, type, content);
+                    await interaction.reply(`Set cell ${cell} to "${content}"`);
                     break;
 
                 case 'mark':
-                    await this.boardService.markCell(board, cell);
-                    logger.info('Cell marked', { cell, boardId: board.id });
+                    await this.boardService.handleCommand('mark', board, cell);
                     await interaction.reply(`Marked cell ${cell} with an X`);
                     break;
 
                 case 'unmark':
-                    await this.boardService.unmarkCell(board, cell);
-                    logger.info('Cell unmarked', { cell, boardId: board.id });
+                    await this.boardService.handleCommand('unmark', board, cell);
                     await interaction.reply(`Removed the X from cell ${cell}`);
                     break;
 
                 case 'clear':
-                    await this.boardService.clearCell(board, cell);
-                    logger.info('Cell cleared', { cell, boardId: board.id });
+                    await this.boardService.handleCommand('clear', board, cell);
                     await interaction.reply(`Cleared cell ${cell}`);
                     break;
             }
@@ -303,7 +301,8 @@ class DiscordCommands {
             logger.error('Failed to perform basic operation', {
                 operation,
                 cell,
-                value,
+                type,
+                content,
                 boardId: board.id,
                 error: error.message,
                 stack: error.stack
