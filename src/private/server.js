@@ -8,6 +8,7 @@ const logger = require('./utils/logger');
 const DiscordCommands = require('./routes/discord');
 const apiRoutes = require('./routes/api');
 const constants = require('./config/constants');
+const boardService = require('./services/boardService');
 
 class Server {
     constructor() {
