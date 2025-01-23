@@ -110,7 +110,7 @@ class BoardService {
             throw new Error('Invalid board ID');
         }
 
-        logger.debug('Getting board path', { 
+        logger.info('Getting board path', { 
             boardId,
             mode: this.mode,
             isUnified: this.mode === BOARD_MODES.UNI
@@ -118,19 +118,19 @@ class BoardService {
 
         // In unified mode, always return the server board path
         if (this.mode === BOARD_MODES.UNI) {
-            const path = path.join(BOARDS_DIR, `${UNIFIED_BOARD_ID}-board.json`);
-            logger.debug('Using unified board path', { path });
-            return path;
+            const boardPath = path.join(BOARDS_DIR, `${UNIFIED_BOARD_ID}-board.json`);
+            logger.info('Using unified board path', { boardPath });
+            return boardPath;
         }
 
         // Existing path logic for individual mode
         const sanitizedId = boardId.replace(/[^a-zA-Z0-9\-_]/g, '');
         const prefix = sanitizedId.startsWith('server-') ? 'server-' : 'user-';
         const cleanId = sanitizedId.replace(/^(user-|server-)/, '');
-        const path = path.join(BOARDS_DIR, `${prefix}${cleanId}-board.json`);
+        const boardPath = path.join(BOARDS_DIR, `${prefix}${cleanId}-board.json`);
         
-        logger.debug('Using individual board path', { path });
-        return path;
+        logger.info('Using individual board path', { boardPath });
+        return boardPath;
     }
 
     createNewBoard(userId, userName) {
