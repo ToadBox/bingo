@@ -4,6 +4,12 @@ const boardService = require('../services/boardService');
 const logger = require('../utils/logger');
 const rateLimit = require('express-rate-limit');
 
+// Add helper function for timing
+function getElapsedMs(startTime) {
+    const [seconds, nanoseconds] = process.hrtime(startTime);
+    return (seconds * 1000 + nanoseconds / 1e6).toFixed(2);
+}
+
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 100 // limit each IP to 100 requests per windowMs
@@ -13,31 +19,35 @@ router.use(apiLimiter);
 
 // Get all boards
 router.get('/boards', async (req, res) => {
+    const startTime = process.hrtime();
+    
     try {
+        // Check ETag for caching
         const boards = await boardService.getAllBoards();
+        const eTag = boardService._generateETag(boards);
         
-        // Log the successful fetch with request details
-        logger.info('Boards fetched successfully', { 
-            req: {
-                ip: req.ip || req.connection?.remoteAddress,
-                method: req.method,
-                path: req.path,
-                userAgent: req.get('user-agent')
-            },
-            status: 200,
-            count: boards.length 
+        if (req.headers['if-none-match'] === eTag) {
+            logger.debug('304 Not Modified', {
+                duration: getElapsedMs(startTime)
+            });
+            return res.status(304).end();
+        }
+
+        res.set({
+            'ETag': eTag,
+            'Cache-Control': 'private, no-cache'
+        });
+
+        logger.info('Boards fetched successfully', {
+            count: boards.length,
+            duration: getElapsedMs(startTime)
         });
         
         res.json(boards);
     } catch (error) {
-        logger.error('Failed to fetch boards', { 
-            req: {
-                ip: req.ip || req.connection?.remoteAddress,
-                method: req.method,
-                path: req.path,
-                userAgent: req.get('user-agent')
-            },
-            error: error.message 
+        logger.error('Failed to fetch boards', {
+            error: error.message,
+            duration: getElapsedMs(startTime)
         });
         res.status(500).json({ error: 'Failed to fetch boards' });
     }

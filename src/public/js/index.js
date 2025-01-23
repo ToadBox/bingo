@@ -7,21 +7,38 @@ import { initTheme } from '/js/theme.js';
 initTheme();
 
 async function loadBoards() {
+    const boardsGrid = document.getElementById('boards');
+    
     try {
-        const response = await fetch('/api/boards');
-        if (!response.ok) {
-            if (response.status === 429) {
-                throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-            }
-            throw new Error(`HTTP error! status: ${response.status}`);
+        const boards = await fetchBoards();
+        
+        // If null, no changes needed
+        if (boards === null) {
+            Logger.debug('Boards unchanged, skipping update');
+            return;
         }
-        const boards = await response.json();
-        Logger.debug('Boards loaded successfully', { count: boards.length });
+
+        Logger.debug('Boards changed, updating display', { count: boards?.length });
+        
+        // Clear loading state
+        boardsGrid.innerHTML = '';
+        
+        // Update display
         updateBoardsDisplay(boards);
     } catch (error) {
-        console.error('Failed to load boards:', error);
-        document.querySelector('.loading').textContent = 
-            'Failed to load boards. Please try refreshing the page.';
+        Logger.error('Failed to load boards:', error);
+        // Show a more user-friendly error with retry button
+        boardsGrid.innerHTML = `
+            <div class="error-state">
+                Failed to load boards. Please try refreshing the page.
+                <br>
+                <small>${error.message}</small>
+                <br>
+                <button onclick="window.location.reload()" class="retry-button">
+                    Retry
+                </button>
+            </div>
+        `;
     }
 }
 
@@ -35,6 +52,15 @@ function updateBoardsDisplay(boards) {
         return;
     }
 
+    // Store hover states before update
+    const hoveredCards = Array.from(document.querySelectorAll('.board-card:hover')).map(card => {
+        return {
+            boardId: card.getAttribute('href').split('/').pop(),
+            rect: card.getBoundingClientRect()
+        };
+    });
+
+    // Update the board content
     boardsGrid.innerHTML = boards.map(board => {
         try {
             const allCells = board.cells.flat();
@@ -55,6 +81,11 @@ function updateBoardsDisplay(boards) {
             // Calculate completion stats
             const totalCells = allCells.filter(cell => cell && cell.value).length;
             const completedCells = allCells.filter(cell => cell && cell.value && cell.marked).length;
+
+            const recentlyCompleted = allCells
+                .filter(cell => cell && cell.value && cell.marked)
+                .slice(-3) // Get last 3 completed items
+                .reverse(); // Most recent first
 
             return `
                 <a class="board-card" 
@@ -83,6 +114,16 @@ function updateBoardsDisplay(boards) {
                                 .join('')}
                         </div>
                         <span class="completion-count">${completedCells}/${totalCells}</span>
+                        ${recentlyCompleted.length > 0 ? `
+                            <div class="completed-items">
+                                <p class="completed-header">Recently completed:</p>
+                                <ul>
+                                    ${recentlyCompleted.map(cell => 
+                                        `<li>${escapeHtml(cell.value)}</li>`
+                                    ).join('')}
+                                </ul>
+                            </div>
+                        ` : ''}
                         ${incompleteCells.length > 0 ? `
                             <div class="incomplete-items">
                                 <p class="incomplete-header">Still to complete:</p>
@@ -104,6 +145,14 @@ function updateBoardsDisplay(boards) {
             return '';
         }
     }).filter(Boolean).join('');
+
+    // Restore hover states
+    hoveredCards.forEach(({ boardId, rect }) => {
+        const updatedCard = document.querySelector(`.board-card[href="/board/${boardId}"]`);
+        if (updatedCard && isPointInRect(rect, { x: event.clientX, y: event.clientY })) {
+            updatedCard.classList.add('hover-preserved');
+        }
+    });
 }
 
 function generateMiniGrid(cells) {
@@ -123,6 +172,15 @@ function generateMiniGrid(cells) {
     ).join('');
 }
 
+// Helper function to check if mouse is still over element
+function isPointInRect(rect, point) {
+    return point.x >= rect.left && 
+           point.x <= rect.right && 
+           point.y >= rect.top && 
+           point.y <= rect.bottom;
+}
+
 // Initial load and periodic refresh
 loadBoards();
-setInterval(loadBoards, 5000); 
+const POLL_INTERVAL = 30000; // 30 seconds instead of 10
+setInterval(loadBoards, POLL_INTERVAL); 

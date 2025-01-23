@@ -6,6 +6,11 @@ const constants = require('../config/constants');
 class DiscordCommands {
     constructor(boardService) {
         this.boardService = boardService;
+        this.allowedGuildId = process.env.TOADBOX;
+        
+        if (!this.allowedGuildId) {
+            logger.warn('TOADBOX guild ID not set in environment variables');
+        }
     }
 
     setupCommands() {
@@ -82,7 +87,46 @@ class DiscordCommands {
         ];
     }
 
+    async register(client) {
+        try {
+            // Register commands only for the specific guild
+            const guild = client.guilds.cache.get(this.allowedGuildId);
+            
+            if (!guild) {
+                logger.error('ToadBox guild not found', { guildId: this.allowedGuildId });
+                return;
+            }
+
+            // Fetch and delete existing guild commands
+            const existingCommands = await guild.commands.fetch();
+            for (const command of existingCommands.values()) {
+                await guild.commands.delete(command);
+            }
+
+            // Register new commands for the specific guild
+            const commands = this.setupCommands();
+            await guild.commands.set(commands);
+            
+            logger.info('Discord commands registered for ToadBox', { 
+                guildId: this.allowedGuildId,
+                commandCount: commands.length 
+            });
+        } catch (error) {
+            logger.error('Failed to register Discord commands', { error: error.message });
+            throw error;
+        }
+    }
+
     async handleCommand(interaction) {
+        // Check if command is from ToadBox
+        if (interaction.guildId !== this.allowedGuildId) {
+            await interaction.reply({
+                content: '❌ This bot is only available in ToadBox.',
+                ephemeral: true
+            });
+            return;
+        }
+
         const command = interaction.commandName;
         
         try {
@@ -227,16 +271,10 @@ class DiscordCommands {
 Note: Advanced board management commands are disabled in unified mode.`;
     }
 
-    async register(client) {
-        try {
-            const commands = this.setupCommands();
-            await client.application.commands.set(commands);
-            logger.info('Discord commands registered successfully');
-        } catch (error) {
-            logger.error('Failed to register Discord commands', { error: error.message });
-            throw error;
-        }
+    async handleAdvancedOperation(interaction, board, subcommand) {
+        // Implementation of advanced operation handling
+        throw new Error('Advanced operation handling not implemented');
     }
 }
 
-module.exports = new DiscordCommands(boardService);
+module.exports = DiscordCommands;

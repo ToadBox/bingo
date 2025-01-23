@@ -39,6 +39,16 @@ class BoardService {
         this.boardCache = new Map();
         this.cacheTimestamps = new Map();
 
+        // Track last modified times
+        this.lastModified = new Map();
+        this.etags = new Map();
+
+        // Add file descriptor cache
+        this.fileHandles = new Map();
+        
+        // Pre-load file handles for better performance
+        this._initializeFileHandles();
+
         logger.info('Initializing BoardService', { 
             mode: this.mode,
             boardsDir: BOARDS_DIR 
@@ -246,36 +256,50 @@ class BoardService {
     }
 
     async getAllBoards() {
+        const startTime = process.hrtime();
         logger.debug('Fetching boards');
+        
         try {
             if (this.mode === BOARD_MODES.UNI) {
-                // In unified mode, only return the server board
                 const serverBoard = await this.loadBoard(UNIFIED_BOARD_ID);
+                this._logPerformance('getAllBoards (unified)', startTime);
                 return serverBoard ? [serverBoard] : [];
             }
 
             const files = await fs.readdir(BOARDS_DIR);
+            const readStart = process.hrtime();
+            
             const boards = await Promise.all(
                 files
                     .filter(file => file.endsWith('-board.json'))
                     .map(async file => {
+                        const fileStart = process.hrtime();
                         const content = await fs.readFile(path.join(BOARDS_DIR, file), 'utf8');
                         const board = JSON.parse(content);
-                        return {
-                            id: board.id,
-                            title: board.title,
-                            createdBy: board.createdBy,
-                            lastUpdated: board.lastUpdated,
-                            cells: board.cells
-                        };
+                        const duration = this._getElapsedMs(fileStart);
+                        logger.debug('Board file read', { file, duration });
+                        return board;
                     })
             );
             
+            const readDuration = this._getElapsedMs(readStart);
+            logger.debug('All board files read', { count: boards.length, duration: readDuration });
+            
             const sortedBoards = boards.sort((a, b) => b.lastUpdated - a.lastUpdated);
-            logger.info('Boards fetched successfully', { count: sortedBoards.length });
+            const totalDuration = this._getElapsedMs(startTime);
+            
+            logger.info('Boards fetched successfully', { 
+                count: sortedBoards.length,
+                readDuration,
+                totalDuration 
+            });
+            
             return sortedBoards;
         } catch (error) {
-            logger.error('Failed to fetch boards', { error: error.message });
+            logger.error('Failed to fetch boards', { 
+                error: error.message,
+                duration: this._getElapsedMs(startTime)
+            });
             throw error;
         }
     }
@@ -296,29 +320,19 @@ class BoardService {
     }
 
     async _loadBoardFromDisk(boardId) {
-        const boardPath = this.getBoardPath(boardId);
+        const fileName = `${boardId}-board.json`;
+        const handle = this.fileHandles.get(fileName);
         
-        try {
-            await fs.access(boardPath);
-        } catch {
-            logger.warn('Board file not found', { boardId, path: boardPath });
-            return null;
+        if (handle) {
+            const { size } = await handle.stat();
+            const buffer = Buffer.alloc(size);
+            await handle.read(buffer, 0, size, 0);
+            return JSON.parse(buffer.toString());
         }
-
-        const savedState = await fs.readFile(boardPath, 'utf8');
-        const board = JSON.parse(savedState);
-
-        // Validate board structure
-        if (!this.isValidBoard(board)) {
-            throw new Error('Invalid board structure');
-        }
-
-        logger.info('Board loaded successfully', { 
-            boardId,
-            title: board.title
-        });
-
-        return board;
+        
+        // Fallback to regular file read
+        const content = await fs.readFile(path.join(BOARDS_DIR, fileName), 'utf8');
+        return JSON.parse(content);
     }
 
     isCommandAllowed(command) {
@@ -344,6 +358,70 @@ class BoardService {
             default:
                 throw new Error(`Unknown command: ${command}`);
         }
+    }
+
+    async getBoards(req) {
+        try {
+            const boards = await this._loadBoards();
+            
+            // Generate ETag based on last modified times
+            const etagValue = this._generateETag(boards);
+            
+            // Check if client's version matches
+            if (req.headers['if-none-match'] === etagValue) {
+                return { status: 304 }; // Not Modified
+            }
+
+            return {
+                status: 200,
+                data: boards,
+                headers: {
+                    'ETag': etagValue,
+                    'Cache-Control': 'private, no-cache'
+                }
+            };
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    _generateETag(data) {
+        return `"${require('crypto')
+            .createHash('md5')
+            .update(JSON.stringify(data))
+            .digest('hex')}"`;
+    }
+
+    _getElapsedMs(startTime) {
+        const [seconds, nanoseconds] = process.hrtime(startTime);
+        return (seconds * 1000 + nanoseconds / 1e6).toFixed(2);
+    }
+
+    async _initializeFileHandles() {
+        try {
+            const files = await fs.readdir(BOARDS_DIR);
+            for (const file of files) {
+                if (file.endsWith('-board.json')) {
+                    const handle = await fs.open(path.join(BOARDS_DIR, file), 'r');
+                    this.fileHandles.set(file, handle);
+                }
+            }
+            logger.debug('File handles initialized', { 
+                count: this.fileHandles.size 
+            });
+        } catch (error) {
+            logger.error('Failed to initialize file handles', { 
+                error: error.message 
+            });
+        }
+    }
+
+    // Don't forget to close handles on shutdown
+    async cleanup() {
+        for (const handle of this.fileHandles.values()) {
+            await handle.close();
+        }
+        this.fileHandles.clear();
     }
 }
 

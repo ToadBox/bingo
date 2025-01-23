@@ -1,7 +1,53 @@
 export async function fetchBoards() {
-  const response = await fetch('/api/boards');
-  if (!response.ok) throw new Error('Failed to fetch boards');
-  return response.json();
+  try {
+    const lastETag = localStorage.getItem('boardsETag');
+    let cachedBoards = null;
+    
+    try {
+      cachedBoards = JSON.parse(localStorage.getItem('boardsData'));
+    } catch (e) {
+      // Invalid cache data, will fetch fresh
+    }
+    
+    const headers = new Headers();
+    if (lastETag) {
+      headers.append('If-None-Match', lastETag);
+    }
+
+    const response = await fetch('/api/boards', { 
+      headers,
+      // Add cache control headers
+      cache: 'no-cache',
+      credentials: 'same-origin'
+    });
+    
+    // Store new ETag if we got one
+    const newETag = response.headers.get('ETag');
+    if (newETag) {
+      localStorage.setItem('boardsETag', newETag);
+    }
+
+    // 304 means use cached data
+    if (response.status === 304) {
+      if (!cachedBoards) {
+        throw new Error('Cache missing, please refresh');
+      }
+      return cachedBoards;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+    }
+    
+    const boards = await response.json();
+    // Store the fresh data in cache
+    localStorage.setItem('boardsData', JSON.stringify(boards));
+    return boards;
+    
+  } catch (error) {
+    // Preserve and rethrow the original error with more context
+    throw new Error(`Failed to fetch boards: ${error.message}`);
+  }
 }
 
 export async function createBoard(title, userId) {
@@ -15,7 +61,21 @@ export async function createBoard(title, userId) {
 }
 
 export async function fetchBoard(boardId) {
-  const response = await fetch(`/api/board/${boardId}`);
+  const lastETag = localStorage.getItem(`board-${boardId}-ETag`);
+  
+  const headers = new Headers();
+  if (lastETag) {
+    headers.append('If-None-Match', lastETag);
+  }
+
+  const response = await fetch(`/api/board/${boardId}`, { headers });
+  
+  const newETag = response.headers.get('ETag');
+  if (newETag) {
+    localStorage.setItem(`board-${boardId}-ETag`, newETag);
+  }
+
+  if (response.status === 304) return null;
   if (!response.ok) throw new Error('Board not found');
   return response.json();
 }
