@@ -4,3 +4,5 @@ node_modules
 src/private/utils/logs/*.log
 src/private/boards/user-*.json
 public/images/cells/*
+boards/*.json
+src/private/boards/server-01-board.json
