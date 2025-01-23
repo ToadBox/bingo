@@ -266,7 +266,6 @@ class DiscordCommands {
 • \`/bingo mark <cell>\` - Mark a cell as complete
 • \`/bingo unmark <cell>\` - Remove mark from a cell
 • \`/bingo clear <cell>\` - Clear a cell's contents
-• \`/bingo show\` - Display the current board
 
 Note: Advanced board management commands are disabled in unified mode.`;
     }
