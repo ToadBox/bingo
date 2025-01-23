@@ -139,7 +139,12 @@ class DiscordCommands {
                 return;
             }
 
-            const board = await this.boardService.loadBoard(interaction.guildId);
+            // Use UNIFIED_BOARD_ID in unified mode, otherwise use guildId
+            const boardId = this.boardService.mode === constants.BOARD_MODES.UNI 
+                ? constants.UNIFIED_BOARD_ID 
+                : interaction.guildId;
+
+            const board = await this.boardService.loadBoard(boardId);
             if (!board) {
                 await interaction.reply({
                     content: '❌ No board found for this server.',
@@ -168,14 +173,11 @@ class DiscordCommands {
                         ephemeral: true
                     });
             }
-
         } catch (error) {
-            logger.error('Discord command error', {
-                command,
+            logger.error('Discord command error', { 
                 error: error.message,
-                userId: interaction.user.id
+                command: interaction?.commandName
             });
-            
             await interaction.reply({
                 content: `❌ Error: ${error.message}`,
                 ephemeral: true
