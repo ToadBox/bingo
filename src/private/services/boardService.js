@@ -261,7 +261,8 @@ class BoardService {
         try {
             if (this.mode === BOARD_MODES.UNI) {
                 const serverBoard = await this.loadBoard(UNIFIED_BOARD_ID);
-                this._logPerformance('getAllBoards (unified)', startTime);
+                const duration = this._getElapsedMs(startTime);
+                logger.debug('Unified board fetched', { duration });
                 return serverBoard ? [serverBoard] : [];
             }
 
