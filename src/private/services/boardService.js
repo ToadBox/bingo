@@ -175,7 +175,7 @@ class BoardService {
         const boardId = this.getBoardId(requestedId);
         const filePath = this.getBoardPath(boardId);
         
-        logger.debug('Loading board', { 
+        logger.info('Loading board', { 
             requestedId,
             boardId,
             filePath,
@@ -185,42 +185,16 @@ class BoardService {
         try {
             const data = await fs.readFile(filePath, 'utf8');
             const board = JSON.parse(data);
-            logger.debug('Board loaded successfully', { 
-                boardId: board.id,
-                title: board.title,
-                cellCount: board.cells.flat().length
-            });
+            logger.info('Board loaded successfully', { boardId: board.id });
             return board;
         } catch (error) {
-            if (error.code === 'ENOENT') {
-                logger.debug('Board file not found', { 
-                    filePath,
-                    mode: this.mode,
-                    isUnified: this.mode === BOARD_MODES.UNI
-                });
-                
-                // If file doesn't exist and we're in unified mode, create it
-                if (this.mode === BOARD_MODES.UNI) {
-                    logger.info('Creating new unified board');
-                    const newBoard = {
-                        id: UNIFIED_BOARD_ID,
-                        createdAt: Date.now(),
-                        lastUpdated: Date.now(),
-                        title: 'ToadBox Unified Bingo Board',
-                        cells: this.createEmptyGrid()
-                    };
-                    await this.saveBoard(newBoard);
-                    return newBoard;
-                }
-                return null;
-            }
-            logger.error('Failed to load board', { 
+            logger.error('Failed to load board', {
                 error: error.message,
-                code: error.code,
+                boardId,
                 filePath,
-                stack: error.stack
+                mode: this.mode
             });
-            throw error;
+            return null;
         }
     }
 

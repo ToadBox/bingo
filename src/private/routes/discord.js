@@ -167,13 +167,9 @@ class DiscordCommands {
 
             const board = await this.boardService.loadBoard(boardId);
             if (!board) {
-                logger.warn('Board not found', {
-                    boardId,
-                    mode: this.boardService.mode,
-                    command
-                });
+                logger.error('Failed to load unified board', { boardId });
                 await interaction.reply({
-                    content: '❌ No board found for this server.',
+                    content: '❌ Error loading the unified board. Please contact an administrator.',
                     ephemeral: true
                 });
                 return;
