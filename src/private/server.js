@@ -5,7 +5,7 @@ const { Client, GatewayIntentBits } = require('discord.js');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const logger = require('./utils/logger');
-const discordCommands = require('./routes/discord');
+const DiscordCommands = require('./routes/discord');
 const apiRoutes = require('./routes/api');
 const constants = require('./config/constants');
 
@@ -183,11 +183,13 @@ class Server {
     setupDiscordBot() {
         this.client.once('ready', async () => {
             logger.info('Discord bot is ready', { username: this.client.user.tag });
+            const discordCommands = new DiscordCommands(boardService);
             await discordCommands.register(this.client);
         });
 
         this.client.on('interactionCreate', async interaction => {
             try {
+                const discordCommands = new DiscordCommands(boardService);
                 await discordCommands.handleCommand(interaction);
             } catch (error) {
                 logger.error('Discord command error', { 
