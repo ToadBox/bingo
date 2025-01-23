@@ -118,8 +118,19 @@ class DiscordCommands {
     }
 
     async handleCommand(interaction) {
+        logger.info('Handling Discord command', {
+            command: interaction.commandName,
+            guildId: interaction.guildId,
+            userId: interaction.user.id,
+            username: interaction.user.tag
+        });
+
         // Check if command is from ToadBox
         if (interaction.guildId !== this.allowedGuildId) {
+            logger.warn('Command attempted from unauthorized guild', {
+                guildId: interaction.guildId,
+                userId: interaction.user.id
+            });
             await interaction.reply({
                 content: '❌ This bot is only available in ToadBox.',
                 ephemeral: true
@@ -132,6 +143,10 @@ class DiscordCommands {
         try {
             // Check if command is allowed before proceeding
             if (!this.boardService.isCommandAllowed(command)) {
+                logger.info('Command not allowed in unified mode', {
+                    command,
+                    userId: interaction.user.id
+                });
                 await interaction.reply({
                     content: `⚠️ The command \`/${command}\` is not available in unified mode. Only basic board operations (set, clear, mark, unmark) are allowed.`,
                     ephemeral: true
@@ -144,8 +159,19 @@ class DiscordCommands {
                 ? constants.UNIFIED_BOARD_ID 
                 : interaction.guildId;
 
+            logger.info('Loading board for command', {
+                boardId,
+                mode: this.boardService.mode,
+                command
+            });
+
             const board = await this.boardService.loadBoard(boardId);
             if (!board) {
+                logger.warn('Board not found', {
+                    boardId,
+                    mode: this.boardService.mode,
+                    command
+                });
                 await interaction.reply({
                     content: '❌ No board found for this server.',
                     ephemeral: true
@@ -153,11 +179,26 @@ class DiscordCommands {
                 return;
             }
 
+            logger.info('Board loaded successfully', {
+                boardId: board.id,
+                title: board.title,
+                command
+            });
+
             switch (command) {
                 case 'bingo':
                     const subcommand = interaction.options.getSubcommand();
+                    logger.info('Processing bingo subcommand', {
+                        subcommand,
+                        mode: this.boardService.mode
+                    });
+
                     if (this.boardService.mode === constants.BOARD_MODES.UNI && 
                         !['show', 'help'].includes(subcommand)) {
+                        logger.info('Advanced operation attempted in unified mode', {
+                            subcommand,
+                            userId: interaction.user.id
+                        });
                         await interaction.reply({
                             content: '⚠️ Only basic board operations are available in unified mode.',
                             ephemeral: true
@@ -168,6 +209,7 @@ class DiscordCommands {
                     break;
 
                 default:
+                    logger.warn('Unknown command received', { command });
                     await interaction.reply({
                         content: '❌ Unknown command',
                         ephemeral: true
@@ -176,7 +218,10 @@ class DiscordCommands {
         } catch (error) {
             logger.error('Discord command error', { 
                 error: error.message,
-                command: interaction?.commandName
+                command: interaction?.commandName,
+                stack: error.stack,
+                user: interaction.user.tag,
+                guildId: interaction.guildId
             });
             await interaction.reply({
                 content: `❌ Error: ${error.message}`,
@@ -220,26 +265,50 @@ class DiscordCommands {
         const cell = interaction.options.getString('cell');
         const value = interaction.options.getString('value');
 
-        switch (operation) {
-            case 'set':
-                await this.boardService.setCellValue(board, cell, value);
-                await interaction.reply(`Set cell ${cell} to "${value}"`);
-                break;
+        logger.info('Handling basic operation', {
+            operation,
+            cell,
+            value,
+            boardId: board.id,
+            userId: interaction.user.id
+        });
 
-            case 'mark':
-                await this.boardService.markCell(board, cell);
-                await interaction.reply(`Marked cell ${cell} with an X`);
-                break;
+        try {
+            switch (operation) {
+                case 'set':
+                    await this.boardService.setCellValue(board, cell, value);
+                    logger.info('Cell value set', { cell, value, boardId: board.id });
+                    await interaction.reply(`Set cell ${cell} to "${value}"`);
+                    break;
 
-            case 'unmark':
-                await this.boardService.unmarkCell(board, cell);
-                await interaction.reply(`Removed the X from cell ${cell}`);
-                break;
+                case 'mark':
+                    await this.boardService.markCell(board, cell);
+                    logger.info('Cell marked', { cell, boardId: board.id });
+                    await interaction.reply(`Marked cell ${cell} with an X`);
+                    break;
 
-            case 'clear':
-                await this.boardService.clearCell(board, cell);
-                await interaction.reply(`Cleared cell ${cell}`);
-                break;
+                case 'unmark':
+                    await this.boardService.unmarkCell(board, cell);
+                    logger.info('Cell unmarked', { cell, boardId: board.id });
+                    await interaction.reply(`Removed the X from cell ${cell}`);
+                    break;
+
+                case 'clear':
+                    await this.boardService.clearCell(board, cell);
+                    logger.info('Cell cleared', { cell, boardId: board.id });
+                    await interaction.reply(`Cleared cell ${cell}`);
+                    break;
+            }
+        } catch (error) {
+            logger.error('Failed to perform basic operation', {
+                operation,
+                cell,
+                value,
+                boardId: board.id,
+                error: error.message,
+                stack: error.stack
+            });
+            throw error;
         }
     }
 

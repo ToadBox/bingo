@@ -106,20 +106,31 @@ class BoardService {
 
     getBoardPath(boardId) {
         if (!boardId || typeof boardId !== 'string') {
+            logger.error('Invalid board ID', { boardId });
             throw new Error('Invalid board ID');
         }
 
+        logger.debug('Getting board path', { 
+            boardId,
+            mode: this.mode,
+            isUnified: this.mode === BOARD_MODES.UNI
+        });
+
         // In unified mode, always return the server board path
         if (this.mode === BOARD_MODES.UNI) {
-            return path.join(BOARDS_DIR, `${UNIFIED_BOARD_ID}-board.json`);
+            const path = path.join(BOARDS_DIR, `${UNIFIED_BOARD_ID}-board.json`);
+            logger.debug('Using unified board path', { path });
+            return path;
         }
 
         // Existing path logic for individual mode
         const sanitizedId = boardId.replace(/[^a-zA-Z0-9\-_]/g, '');
         const prefix = sanitizedId.startsWith('server-') ? 'server-' : 'user-';
         const cleanId = sanitizedId.replace(/^(user-|server-)/, '');
+        const path = path.join(BOARDS_DIR, `${prefix}${cleanId}-board.json`);
         
-        return path.join(BOARDS_DIR, `${prefix}${cleanId}-board.json`);
+        logger.debug('Using individual board path', { path });
+        return path;
     }
 
     createNewBoard(userId, userName) {
@@ -154,13 +165,33 @@ class BoardService {
         const boardId = this.getBoardId(requestedId);
         const filePath = this.getBoardPath(boardId);
         
+        logger.debug('Loading board', { 
+            requestedId,
+            boardId,
+            filePath,
+            mode: this.mode
+        });
+
         try {
             const data = await fs.readFile(filePath, 'utf8');
-            return JSON.parse(data);
+            const board = JSON.parse(data);
+            logger.debug('Board loaded successfully', { 
+                boardId: board.id,
+                title: board.title,
+                cellCount: board.cells.flat().length
+            });
+            return board;
         } catch (error) {
             if (error.code === 'ENOENT') {
+                logger.debug('Board file not found', { 
+                    filePath,
+                    mode: this.mode,
+                    isUnified: this.mode === BOARD_MODES.UNI
+                });
+                
                 // If file doesn't exist and we're in unified mode, create it
                 if (this.mode === BOARD_MODES.UNI) {
+                    logger.info('Creating new unified board');
                     const newBoard = {
                         id: UNIFIED_BOARD_ID,
                         createdAt: Date.now(),
@@ -173,6 +204,12 @@ class BoardService {
                 }
                 return null;
             }
+            logger.error('Failed to load board', { 
+                error: error.message,
+                code: error.code,
+                filePath,
+                stack: error.stack
+            });
             throw error;
         }
     }
@@ -403,6 +440,12 @@ class BoardService {
     }
 
     getBoardId(requestedId) {
+        logger.debug('Getting board ID', { 
+            requestedId,
+            mode: this.mode,
+            isUnified: this.mode === BOARD_MODES.UNI
+        });
+        
         // In unified mode, always return the unified board ID
         if (this.mode === BOARD_MODES.UNI) {
             return UNIFIED_BOARD_ID;
