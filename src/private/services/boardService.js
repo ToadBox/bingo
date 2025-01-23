@@ -56,6 +56,7 @@ class BoardService {
         // Ensure boards directory exists
         if (!fsSync.existsSync(BOARDS_DIR)) {
             fsSync.mkdirSync(BOARDS_DIR, { recursive: true });
+            logger.info('Created boards directory', { path: BOARDS_DIR });
         }
     }
 
@@ -151,7 +152,7 @@ class BoardService {
 
     async loadBoard(requestedId) {
         const boardId = this.getBoardId(requestedId);
-        const filePath = path.join(BOARDS_DIR, `${boardId}-board.json`);
+        const filePath = this.getBoardPath(boardId);
         
         try {
             const data = await fs.readFile(filePath, 'utf8');
