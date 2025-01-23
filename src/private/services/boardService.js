@@ -149,52 +149,29 @@ class BoardService {
         );
     }
 
-    async loadBoard(boardId) {
-        logger.debug('Loading board', { 
-            boardId, 
-            mode: this.mode,
-            cacheEnabled: this.cacheConfig.enabled,
-            isCached: this.boardCache.has(boardId)
-        });
-
+    async loadBoard(requestedId) {
+        const boardId = this.getBoardId(requestedId);
+        const filePath = path.join(BOARDS_DIR, `${boardId}-board.json`);
+        
         try {
-            // In unified mode, always load the server board
-            if (this.mode === BOARD_MODES.UNI) {
-                boardId = UNIFIED_BOARD_ID;
-            }
-
-            // Check cache if enabled
-            if (this.cacheConfig.enabled) {
-                const cached = this.boardCache.get(boardId);
-                const timestamp = this.cacheTimestamps.get(boardId);
-                
-                if (cached && timestamp) {
-                    const age = Date.now() - timestamp;
-                    if (age < this.cacheConfig.maxAge) {
-                        logger.debug('Board retrieved from cache', { boardId, age });
-                        return cached;
-                    }
-                }
-            }
-
-            // Load board from disk
-            const board = await this._loadBoardFromDisk(boardId);
-
-            // Cache if appropriate
-            if (this._shouldCache(board)) {
-                this._pruneCache();
-                this.boardCache.set(boardId, board);
-                this.cacheTimestamps.set(boardId, Date.now());
-                logger.debug('Board added to cache', { boardId });
-            }
-
-            return board;
-
+            const data = await fs.readFile(filePath, 'utf8');
+            return JSON.parse(data);
         } catch (error) {
-            logger.error('Error loading board', { 
-                boardId, 
-                error: error.message 
-            });
+            if (error.code === 'ENOENT') {
+                // If file doesn't exist and we're in unified mode, create it
+                if (this.mode === BOARD_MODES.UNI) {
+                    const newBoard = {
+                        id: UNIFIED_BOARD_ID,
+                        createdAt: Date.now(),
+                        lastUpdated: Date.now(),
+                        title: 'ToadBox Unified Bingo Board',
+                        cells: this.createEmptyGrid()
+                    };
+                    await this.saveBoard(newBoard);
+                    return newBoard;
+                }
+                return null;
+            }
             throw error;
         }
     }
@@ -422,6 +399,15 @@ class BoardService {
             await handle.close();
         }
         this.fileHandles.clear();
+    }
+
+    getBoardId(requestedId) {
+        // In unified mode, always return the unified board ID
+        if (this.mode === BOARD_MODES.UNI) {
+            return UNIFIED_BOARD_ID;
+        }
+        // In individual mode, use the requested ID
+        return requestedId;
     }
 }
 
