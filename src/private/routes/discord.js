@@ -141,17 +141,21 @@ class DiscordCommands {
         const command = interaction.commandName;
         
         try {
-            // Check if command is allowed before proceeding
-            if (!this.boardService.isCommandAllowed(command)) {
-                logger.info('Command not allowed in unified mode', {
-                    command,
-                    userId: interaction.user.id
-                });
-                await interaction.reply({
-                    content: `⚠️ The command \`/${command}\` is not available in unified mode. Only basic board operations (set, clear, mark, unmark) are allowed.`,
-                    ephemeral: true
-                });
-                return;
+            if (command === 'bingo') {
+                const subcommand = interaction.options.getSubcommand();
+                
+                // Check if subcommand is allowed in unified mode
+                if (!this.boardService.isCommandAllowed(subcommand)) {
+                    logger.info('Subcommand not allowed in unified mode', {
+                        subcommand,
+                        userId: interaction.user.id
+                    });
+                    await interaction.reply({
+                        content: `⚠️ The command \`/bingo ${subcommand}\` is not available in unified mode. Only basic board operations (set, clear, mark, unmark) are allowed.`,
+                        ephemeral: true
+                    });
+                    return;
+                }
             }
 
             // Use UNIFIED_BOARD_ID in unified mode, otherwise use guildId
