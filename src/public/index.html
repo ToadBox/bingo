@@ -17,5 +17,29 @@
   </div>
 
   <script type="module" src="/js/index.js"></script>
+  <script>
+    // Add version to resource URLs
+    (async () => {
+        try {
+            const response = await fetch('/api/version');
+            const { version, timestamp } = await response.json();
+            const links = document.getElementsByTagName('link');
+            const scripts = document.getElementsByTagName('script');
+            
+            const addVersion = (element) => {
+                if (element.href && !element.href.includes('?v=')) {
+                    element.href = `${element.href}?v=${version}-${timestamp}`;
+                }
+                if (element.src && !element.src.includes('?v=')) {
+                    element.src = `${element.src}?v=${version}-${timestamp}`;
+                }
+            };
+            
+            [...links, ...scripts].forEach(addVersion);
+        } catch (error) {
+            console.error('Failed to fetch version:', error);
+        }
+    })();
+  </script>
 </body>
 </html>

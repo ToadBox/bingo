@@ -109,10 +109,15 @@ class Server {
         
         // Cache control
         this.app.use((req, res, next) => {
-            if (req.url.match(/\.(css|js|jpg|png|gif)$/)) {
-                res.setHeader('Cache-Control', 'public, max-age=3600'); // 1 hour
-            } else {
-                res.setHeader('Cache-Control', 'no-cache');
+            // For HTML files
+            if (req.path.endsWith('.html') || req.path === '/') {
+                res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+                res.set('Pragma', 'no-cache');
+                res.set('Expires', '0');
+            }
+            // For JS and CSS files, allow caching but require revalidation
+            else if (req.path.match(/\.(js|css)$/)) {
+                res.set('Cache-Control', 'public, max-age=0, must-revalidate');
             }
             next();
         });

@@ -125,4 +125,12 @@ router.get('/health', (req, res) => {
     });
 });
 
+// Add version to cache responses
+router.get('/version', (req, res) => {
+    res.json({
+        version: process.env.npm_package_version || '9.9.9',
+        timestamp: Date.now()
+    });
+});
+
 module.exports = router; 
