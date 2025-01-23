@@ -4,6 +4,10 @@ const logger = require('../utils/logger');
 const constants = require('../config/constants');
 
 class DiscordCommands {
+    constructor(boardService) {
+        this.boardService = boardService;
+    }
+
     setupCommands() {
         return [
             new SlashCommandBuilder()
@@ -79,43 +83,58 @@ class DiscordCommands {
     }
 
     async handleCommand(interaction) {
-        if (!interaction.isCommand() || interaction.commandName !== 'bingo') return;
-        
-        const commandContext = {
-            userId: interaction.user.id,
-            userName: interaction.user.username,
-            subcommand: interaction.options.getSubcommand(),
-            guildId: interaction.guildId,
-            channelId: interaction.channelId
-        };
-        
-        logger.info('Bingo command received', commandContext);
+        const command = interaction.commandName;
         
         try {
-            // In unified mode, always use the server board
-            const boardId = boardService.mode === constants.BOARD_MODES.UNI 
-                ? constants.UNIFIED_BOARD_ID 
-                : interaction.user.id;
-
-            let board = await boardService.loadBoard(boardId);
-            if (!board) {
-                if (boardService.mode === constants.BOARD_MODES.UNI) {
-                    throw new Error('Server board not found');
-                }
-                board = boardService.createNewBoard(interaction.user.id, interaction.user.username);
-                await boardService.saveBoard(board);
+            // Check if command is allowed before proceeding
+            if (!this.boardService.isCommandAllowed(command)) {
+                await interaction.reply({
+                    content: `⚠️ The command \`/${command}\` is not available in unified mode. Only basic board operations (set, clear, mark, unmark) are allowed.`,
+                    ephemeral: true
+                });
+                return;
             }
 
-            await this.handleSubcommand(interaction, board);
+            const board = await this.boardService.loadBoard(interaction.guildId);
+            if (!board) {
+                await interaction.reply({
+                    content: '❌ No board found for this server.',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            switch (command) {
+                case 'bingo':
+                    const subcommand = interaction.options.getSubcommand();
+                    if (this.boardService.mode === constants.BOARD_MODES.UNI && 
+                        !['show', 'help'].includes(subcommand)) {
+                        await interaction.reply({
+                            content: '⚠️ Only basic board operations are available in unified mode.',
+                            ephemeral: true
+                        });
+                        return;
+                    }
+                    await this.handleSubcommand(interaction, board);
+                    break;
+
+                default:
+                    await interaction.reply({
+                        content: '❌ Unknown command',
+                        ephemeral: true
+                    });
+            }
+
         } catch (error) {
-            logger.error('Error handling command', { 
+            logger.error('Discord command error', {
+                command,
                 error: error.message,
-                userId: interaction.user.id,
-                command: interaction.options.getSubcommand()
+                userId: interaction.user.id
             });
-            await interaction.reply({ 
-                content: `Error: ${error.message}`, 
-                ephemeral: true 
+            
+            await interaction.reply({
+                content: `❌ Error: ${error.message}`,
+                ephemeral: true
             });
         }
     }
@@ -123,67 +142,89 @@ class DiscordCommands {
     async handleSubcommand(interaction, board) {
         const subcommand = interaction.options.getSubcommand();
 
-        switch(subcommand) {
-            case 'set':
-                const cell = interaction.options.getString('cell');
-                const type = interaction.options.getString('type');
-                const content = interaction.options.getString('content');
-                const { row, col } = boardService.parseCell(cell);
-                
-                await interaction.deferReply();
-                try {
-                    if (type === 'image') {
-                        // Validate URL format
-                        if (!content.match(/^https?:\/\/.*\.(jpg|jpeg|png)(\?.*)?$/i)) {
-                            throw new Error('Invalid image URL. Must end with .jpg, .jpeg, or .png');
-                        }
-                        await boardService.setCellContent(board, row, col, content);
-                        await interaction.editReply(`Set image in cell ${cell}. The image should appear shortly.`);
-                    } else {
-                        await boardService.setCellContent(board, row, col, content);
-                        await interaction.editReply(`Set cell ${cell} to "${content}"`);
+        try {
+            switch (subcommand) {
+                case 'set':
+                case 'mark':
+                case 'unmark':
+                case 'clear':
+                    // These commands are always allowed
+                    await this.handleBasicOperation(interaction, board, subcommand);
+                    break;
+
+                case 'show':
+                case 'help':
+                    // These commands are view-only and always allowed
+                    await this.handleViewOperation(interaction, board, subcommand);
+                    break;
+
+                default:
+                    // All other commands are checked against unified mode
+                    if (this.boardService.mode === constants.BOARD_MODES.UNI) {
+                        throw new Error('This command is not available in unified mode');
                     }
-                } catch (error) {
-                    await interaction.editReply(`Failed to set ${type}: ${error.message}`);
-                }
+                    await this.handleAdvancedOperation(interaction, board, subcommand);
+            }
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    async handleBasicOperation(interaction, board, operation) {
+        const cell = interaction.options.getString('cell');
+        const value = interaction.options.getString('value');
+
+        switch (operation) {
+            case 'set':
+                await this.boardService.setCellValue(board, cell, value);
+                await interaction.reply(`Set cell ${cell} to "${value}"`);
                 break;
 
             case 'mark':
-                const markCell = interaction.options.getString('cell');
-                const { row: markRow, col: markCol } = boardService.parseCell(markCell);
-                board.cells[markRow][markCol].marked = true;
-                boardService.saveBoard(board);
-                await interaction.reply(`Marked cell ${markCell} with an X`);
+                await this.boardService.markCell(board, cell);
+                await interaction.reply(`Marked cell ${cell} with an X`);
                 break;
 
             case 'unmark':
-                const unmarkCell = interaction.options.getString('cell');
-                const { row: unmarkRow, col: unmarkCol } = boardService.parseCell(unmarkCell);
-                board.cells[unmarkRow][unmarkCol].marked = false;
-                boardService.saveBoard(board);
-                await interaction.reply(`Removed the X from cell ${unmarkCell}`);
+                await this.boardService.unmarkCell(board, cell);
+                await interaction.reply(`Removed the X from cell ${cell}`);
                 break;
 
             case 'clear':
-                const clearCell = interaction.options.getString('cell');
-                const { row: clearRow, col: clearCol } = boardService.parseCell(clearCell);
-                board.cells[clearRow][clearCol].value = '';
-                board.cells[clearRow][clearCol].marked = false;
-                boardService.saveBoard(board);
-                await interaction.reply(`Cleared cell ${clearCell}`);
-                break;
-
-            case 'title':
-                const newTitle = interaction.options.getString('text');
-                board.title = newTitle;
-                boardService.saveBoard(board);
-                await interaction.reply(`Updated board title to "${newTitle}"`);
-                break;
-
-            default:
-                await interaction.reply('Unknown command');
+                await this.boardService.clearCell(board, cell);
+                await interaction.reply(`Cleared cell ${cell}`);
                 break;
         }
+    }
+
+    async handleViewOperation(interaction, board, operation) {
+        switch (operation) {
+            case 'show':
+                // Existing show logic
+                break;
+
+            case 'help':
+                const helpText = this.boardService.mode === constants.BOARD_MODES.UNI
+                    ? this.getUnifiedModeHelp()
+                    : this.getStandardModeHelp();
+                await interaction.reply({
+                    content: helpText,
+                    ephemeral: true
+                });
+                break;
+        }
+    }
+
+    getUnifiedModeHelp() {
+        return `
+**Available Commands in Unified Mode:**
+• \`/bingo set <cell> <value>\` - Set a cell's value
+• \`/bingo mark <cell>\` - Mark a cell as complete
+• \`/bingo unmark <cell>\` - Remove mark from a cell
+• \`/bingo clear <cell>\` - Clear a cell's contents
+• \`/bingo show\` - Display the current board
+
+Note: Advanced board management commands are disabled in unified mode.`;
     }
 
     async register(client) {
@@ -198,4 +239,4 @@ class DiscordCommands {
     }
 }
 
-module.exports = new DiscordCommands();
+module.exports = new DiscordCommands(boardService);

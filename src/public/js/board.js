@@ -29,10 +29,16 @@ function renderBoard(board) {
     titleElement.textContent = board.title;
     gridElement.innerHTML = '';
     
-    board.cells.forEach((row, rowIndex) => {
-        row.forEach((cell, colIndex) => {
+    board.cells.forEach((row) => {
+        row.forEach((cell) => {
             const cellElement = document.createElement('div');
             cellElement.className = 'cell' + (cell.marked ? ' marked' : '');
+            
+            // Use the existing label from the board data
+            const label = document.createElement('span');
+            label.className = 'cell-label';
+            label.textContent = cell.label;
+            cellElement.appendChild(label);
             
             if (cell.value) {
                 if (cell.value.toLowerCase().startsWith('image:')) {
@@ -46,10 +52,12 @@ function renderBoard(board) {
                     };
                     cellElement.appendChild(img);
                 } else {
-                    cellElement.textContent = cell.value;
+                    const content = document.createElement('span');
+                    content.className = 'cell-content';
+                    content.textContent = cell.value;
+                    cellElement.appendChild(content);
                 }
-            } else if (rowIndex === 2 && colIndex === 2) {
-                // Only show default free space if no value is set
+            } else if (cell.label === 'C3') { // Center cell
                 const img = document.createElement('img');
                 img.src = '/images/free-space.png';
                 img.alt = 'Free Space';

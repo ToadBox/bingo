@@ -14,15 +14,31 @@ const {
     UNIFIED_BOARD_ID
 } = require('../config/constants');
 
-// Initialize cache with automatic key deletion
-const boardCache = new NodeCache({ 
-    stdTTL: CACHE_TTL,
-    checkperiod: 60,
-    useClones: false
-});
+const CACHE_CONFIG = {
+    PROD: {
+        enabled: true,
+        maxAge: 5 * 60 * 1000, // 5 minutes
+        maxSize: 100 // maximum number of boards to cache
+    },
+    DEBUG: {
+        enabled: false,
+        maxAge: 0,
+        maxSize: 0
+    }
+};
+
+const ALLOWED_UNIFIED_COMMANDS = ['set', 'clear', 'mark', 'unmark'];
 
 class BoardService {
-    constructor() {
+    constructor(mode = BOARD_MODES.STD) {
+        this.mode = mode;
+        this.environment = process.env.NODE_ENV || 'development';
+        this.cacheConfig = CACHE_CONFIG[this.environment === 'production' ? 'PROD' : 'DEBUG'];
+        
+        // Initialize LRU cache with config
+        this.boardCache = new Map();
+        this.cacheTimestamps = new Map();
+
         logger.info('Initializing BoardService', { 
             mode: this.mode,
             boardsDir: BOARDS_DIR 
@@ -31,7 +47,50 @@ class BoardService {
         if (!fsSync.existsSync(BOARDS_DIR)) {
             fsSync.mkdirSync(BOARDS_DIR, { recursive: true });
         }
-        this.mode = BOARD_MODE;
+    }
+
+    getCacheConfig() {
+        return this.cacheConfig;
+    }
+
+    clearCache() {
+        this.boardCache.clear();
+        this.cacheTimestamps.clear();
+        logger.debug('Cache cleared');
+    }
+
+    _shouldCache(board) {
+        if (!this.cacheConfig.enabled) return false;
+        if (!board) return false;
+        
+        // Don't cache boards that are too large
+        const boardSize = JSON.stringify(board).length;
+        if (boardSize > 1024 * 1024) { // 1MB limit
+            logger.warn('Board too large to cache', { 
+                boardId: board.id, 
+                size: boardSize 
+            });
+            return false;
+        }
+        
+        return true;
+    }
+
+    _pruneCache() {
+        if (this.boardCache.size <= this.cacheConfig.maxSize) return;
+
+        const now = Date.now();
+        for (const [boardId, timestamp] of this.cacheTimestamps) {
+            // Remove expired entries
+            if (now - timestamp > this.cacheConfig.maxAge) {
+                this.boardCache.delete(boardId);
+                this.cacheTimestamps.delete(boardId);
+                logger.debug('Removed expired cache entry', { boardId });
+            }
+            
+            // Break if we're under the limit
+            if (this.boardCache.size <= this.cacheConfig.maxSize) break;
+        }
     }
 
     getBoardPath(boardId) {
@@ -84,44 +143,41 @@ class BoardService {
         logger.debug('Loading board', { 
             boardId, 
             mode: this.mode,
-            isCached: boardCache.has(boardId)
+            cacheEnabled: this.cacheConfig.enabled,
+            isCached: this.boardCache.has(boardId)
         });
+
         try {
             // In unified mode, always load the server board
             if (this.mode === BOARD_MODES.UNI) {
                 boardId = UNIFIED_BOARD_ID;
             }
 
-            // Check cache first
-            const cached = boardCache.get(boardId);
-            if (cached) {
-                logger.debug('Board retrieved from cache', { boardId });
-                return cached;
+            // Check cache if enabled
+            if (this.cacheConfig.enabled) {
+                const cached = this.boardCache.get(boardId);
+                const timestamp = this.cacheTimestamps.get(boardId);
+                
+                if (cached && timestamp) {
+                    const age = Date.now() - timestamp;
+                    if (age < this.cacheConfig.maxAge) {
+                        logger.debug('Board retrieved from cache', { boardId, age });
+                        return cached;
+                    }
+                }
             }
 
-            const boardPath = this.getBoardPath(boardId);
-            
-            try {
-                await fs.access(boardPath);
-            } catch {
-                logger.warn('Board file not found', { boardId, path: boardPath });
-                return null;
+            // Load board from disk
+            const board = await this._loadBoardFromDisk(boardId);
+
+            // Cache if appropriate
+            if (this._shouldCache(board)) {
+                this._pruneCache();
+                this.boardCache.set(boardId, board);
+                this.cacheTimestamps.set(boardId, Date.now());
+                logger.debug('Board added to cache', { boardId });
             }
 
-            const savedState = await fs.readFile(boardPath, 'utf8');
-            const board = JSON.parse(savedState);
-
-            // Validate board structure
-            if (!this.isValidBoard(board)) {
-                throw new Error('Invalid board structure');
-            }
-
-            logger.info('Board loaded successfully', { 
-                boardId,
-                title: board.title
-            });
-
-            boardCache.set(boardId, board);
             return board;
 
         } catch (error) {
@@ -149,7 +205,6 @@ class BoardService {
 
         try {
             await fs.writeFile(boardPath, JSON.stringify(board, null, 2));
-            boardCache.set(board.id, board);
             logger.info('Board saved successfully', { boardId: board.id });
             return true;
         } catch (error) {
@@ -238,6 +293,57 @@ class BoardService {
 
     isValidCellPosition(row, col) {
         return row >= 0 && row < BOARD_SIZE && col >= 0 && col < BOARD_SIZE;
+    }
+
+    async _loadBoardFromDisk(boardId) {
+        const boardPath = this.getBoardPath(boardId);
+        
+        try {
+            await fs.access(boardPath);
+        } catch {
+            logger.warn('Board file not found', { boardId, path: boardPath });
+            return null;
+        }
+
+        const savedState = await fs.readFile(boardPath, 'utf8');
+        const board = JSON.parse(savedState);
+
+        // Validate board structure
+        if (!this.isValidBoard(board)) {
+            throw new Error('Invalid board structure');
+        }
+
+        logger.info('Board loaded successfully', { 
+            boardId,
+            title: board.title
+        });
+
+        return board;
+    }
+
+    isCommandAllowed(command) {
+        if (this.mode !== BOARD_MODES.UNI) {
+            return true; // All commands allowed in non-unified mode
+        }
+        
+        return ALLOWED_UNIFIED_COMMANDS.includes(command.toLowerCase());
+    }
+
+    async handleCommand(command, ...args) {
+        if (!this.isCommandAllowed(command)) {
+            throw new Error(`Command '${command}' is not allowed in unified mode`);
+        }
+
+        // Existing command handling logic
+        switch (command.toLowerCase()) {
+            case 'set':
+            case 'clear':
+            case 'mark':
+            case 'unmark':
+                return await this[`handle${command.charAt(0).toUpperCase() + command.slice(1)}`](...args);
+            default:
+                throw new Error(`Unknown command: ${command}`);
+        }
     }
 }
 

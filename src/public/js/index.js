@@ -49,6 +49,13 @@ function updateBoardsDisplay(boards) {
                 ? textCells[Math.floor(Math.random() * textCells.length)] 
                 : null;
 
+            // Get incomplete text cells
+            const incompleteCells = textCells.filter(cell => !cell.marked);
+            
+            // Calculate completion stats
+            const totalCells = allCells.filter(cell => cell && cell.value).length;
+            const completedCells = allCells.filter(cell => cell && cell.value && cell.marked).length;
+
             return `
                 <a class="board-card" 
                    href="/board/${board.id}"
@@ -69,6 +76,24 @@ function updateBoardsDisplay(boards) {
                         <p>Created by: ${escapeHtml(board.createdBy || 'Unknown')}</p>
                         <p class="last-updated">Last updated: ${formatDate(board.lastUpdated)}</p>
                     </div>
+                    <div class="completion-preview">
+                        <div class="completion-dots">
+                            ${Array(totalCells).fill('○')
+                                .map((dot, i) => i < completedCells ? '●' : dot)
+                                .join('')}
+                        </div>
+                        <span class="completion-count">${completedCells}/${totalCells}</span>
+                        ${incompleteCells.length > 0 ? `
+                            <div class="incomplete-items">
+                                <p class="incomplete-header">Still to complete:</p>
+                                <ul>
+                                    ${incompleteCells.map(cell => 
+                                        `<li>${escapeHtml(cell.value)}</li>`
+                                    ).join('')}
+                                </ul>
+                            </div>
+                        ` : ''}
+                    </div>
                 </a>
             `;
         } catch (error) {
@@ -82,14 +107,15 @@ function updateBoardsDisplay(boards) {
 }
 
 function generateMiniGrid(cells) {
-    return cells.map((row, rowIndex) => 
-        row.map((cell, colIndex) => {
-            const isCenter = rowIndex === 2 && colIndex === 2;
+    return cells.map(row => 
+        row.map(cell => {
+            const isCenter = cell.label === 'C3';
             const hasContent = cell && cell.value;
             const isMarked = cell && cell.marked;
             
             return `
                 <div class="mini-cell ${hasContent ? 'filled' : ''} ${isMarked ? 'marked' : ''} ${isCenter ? 'center' : ''}">
+                    <span class="mini-cell-label">${cell.label}</span>
                     ${isMarked ? '✓' : ''}
                 </div>
             `;

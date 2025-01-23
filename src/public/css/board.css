@@ -72,11 +72,20 @@ h1 {
 
 .cell-label {
   position: absolute;
-  top: 5px;
-  left: 5px;
-  font-size: clamp(10px, 1.5vw, 14px);
-  color: var(--secondary-color);
-  font-weight: bold;
+  top: 4px;
+  right: 4px;
+  font-size: clamp(8px, 1.2vw, 12px);
+  color: var(--tertiary-color);
+  opacity: 0.7;
+  font-weight: 500;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.cell-content {
+  padding: 16px 4px 4px 4px;  /* Add top padding to make room for label */
+  display: block;
+  width: 100%;
 }
 
 .cell.marked::before,
