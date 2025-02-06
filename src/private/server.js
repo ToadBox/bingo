@@ -50,8 +50,15 @@ class Server {
             contentSecurityPolicy: {
                 useDefaults: false,
                 directives: {
-                    defaultSrc: ["'self'"],
+                    defaultSrc: ["'self'", "https://earthviewinc.com"],
                     scriptSrc: [
+                        "'self'",
+                        "'unsafe-inline'",
+                        "'unsafe-eval'",
+                        "https://static.cloudflareinsights.com",
+                        "https://*.cloudflareinsights.com"
+                    ],
+                    scriptSrcElem: [
                         "'self'",
                         "'unsafe-inline'",
                         "'unsafe-eval'",
@@ -60,8 +67,8 @@ class Server {
                     ],
                     styleSrc: ["'self'", "'unsafe-inline'"],
                     imgSrc: [
-                        "'self'", 
-                        "data:", 
+                        "'self'",
+                        "data:",
                         "https://earthviewinc.com",
                         "https://*.earthviewinc.com",
                         "https://*.cloudflareinsights.com"
@@ -71,12 +78,7 @@ class Server {
                         "https://*.cloudflareinsights.com",
                         "https://*.bingo.toadbox.net"
                     ],
-                    scriptSrcElem: [
-                        "'self'",
-                        "'unsafe-inline'",
-                        "https://static.cloudflareinsights.com",
-                        "https://*.cloudflareinsights.com"
-                    ],
+                    iconSrc: ["'self'", "https://earthviewinc.com"],
                     workerSrc: ["'self'", "blob:"],
                     frameSrc: ["'none'"],
                     objectSrc: ["'none'"],
