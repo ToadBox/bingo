@@ -60,7 +60,8 @@ class Server {
                         "'self'", 
                         "data:", 
                         "https://earthviewinc.com",
-                        "https://*.earthviewinc.com"
+                        "https://*.earthviewinc.com",
+                        "https://*.cloudflareinsights.com"
                     ],
                     connectSrc: [
                         "'self'",
