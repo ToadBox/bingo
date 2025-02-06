@@ -44,8 +44,11 @@ class Server {
         
         // Security and parsing middleware
         this.app.use(express.json());
+
+        // Updated Helmet configuration
         const helmetConfig = {
             contentSecurityPolicy: {
+                useDefaults: false,
                 directives: {
                     defaultSrc: ["'self'"],
                     scriptSrc: [
@@ -81,13 +84,22 @@ class Server {
                 }
             },
             crossOriginEmbedderPolicy: false,
-            crossOriginOpenerPolicy: true,
+            crossOriginOpenerPolicy: { policy: "same-origin" },
             crossOriginResourcePolicy: { policy: "cross-origin" },
             referrerPolicy: { policy: "strict-origin-when-cross-origin" }
         };
+
+        // Apply Helmet with config
         this.app.use(helmet(helmetConfig));
         
-        // Improved rate limiting
+        // Additional CORS headers
+        this.app.use((req, res, next) => {
+            res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+            res.header('Access-Control-Allow-Origin', '*');
+            next();
+        });
+
+        // Rate limiting
         const apiLimiter = rateLimit({
             windowMs: 15 * 60 * 1000,
             max: 500,
@@ -113,27 +125,17 @@ class Server {
                 }
             }
         }));
-        this.app.use('/images/cells', express.static(path.join(__dirname, '../public/images/cells')));
         
-        // Cache control
+        // Cache control middleware
         this.app.use((req, res, next) => {
-            // For HTML files
             if (req.path.endsWith('.html') || req.path === '/') {
                 res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
                 res.set('Pragma', 'no-cache');
                 res.set('Expires', '0');
             }
-            // For JS and CSS files, allow caching but require revalidation
             else if (req.path.match(/\.(js|css)$/)) {
                 res.set('Cache-Control', 'public, max-age=0, must-revalidate');
             }
-            next();
-        });
-
-        // Add CORS middleware for specific routes if needed
-        this.app.use((req, res, next) => {
-            res.header('Cross-Origin-Resource-Policy', 'cross-origin');
-            res.header('Access-Control-Allow-Origin', '*');
             next();
         });
     }
