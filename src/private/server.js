@@ -78,7 +78,6 @@ class Server {
                         "https://*.cloudflareinsights.com",
                         "https://*.bingo.toadbox.net"
                     ],
-                    iconSrc: ["'self'", "https://earthviewinc.com"],
                     workerSrc: ["'self'", "blob:"],
                     frameSrc: ["'none'"],
                     objectSrc: ["'none'"],
