@@ -8,7 +8,7 @@
 }
 
 .board-card {
-  background: var(--card-bg);
+  background: var(--bg-secondary);
   border-radius: 12px;
   padding: 1rem;
   box-shadow: 0 2px 4px var(--shadow-color);
@@ -18,7 +18,7 @@
   flex-direction: column;
   gap: 0.75rem;
   text-decoration: none;
-  color: var(--text-color);
+  color: var(--text-primary);
   -webkit-user-select: none;
   user-select: none;
 }
@@ -28,29 +28,29 @@
 .board-card.hover-preserved {
   transform: translateY(-2px);
   box-shadow: 0 4px 8px var(--shadow-color);
-  background: var(--card-bg-hover);
+  background: var(--bg-hover);
 }
 
 .board-card:visited,
 .board-card:active,
 .board-card:link {
-  color: var(--text-color);
+  color: var(--text-primary);
 }
 
 .board-card h2 {
   font-size: clamp(1.1rem, 4vw, 1.5rem);
-  color: var(--primary-color);
+  color: var(--text-primary);
   margin-bottom: 0.5rem;
 }
 
 .board-card p {
-  color: var(--secondary-color);
+  color: var(--text-secondary);
   font-size: 0.9rem;
   margin: 0.25rem 0;
 }
 
 .board-card .last-updated {
-  color: var(--tertiary-color);
+  color: var(--text-secondary);
   font-size: 0.8rem;
   margin-top: 0.5rem;
 }
@@ -110,14 +110,14 @@
 
 .mini-cell {
   position: relative;
-  background: var(--card-bg-hover);
+  background: var(--bg-hover);
   border-radius: 2px;
   aspect-ratio: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 0.7rem;
-  color: var(--text-color);
+  color: var(--text-primary);
   pointer-events: none;
 }
 
@@ -129,7 +129,7 @@
 .mini-cell.marked {
   background: var(--accent-color);
   opacity: 1;
-  color: var(--card-bg);
+  color: var(--bg-primary);
 }
 
 .mini-cell.center {
@@ -142,7 +142,7 @@
   top: 1px;
   right: 1px;
   font-size: 6px;
-  color: var(--tertiary-color);
+  color: var(--text-secondary);
   opacity: 0.5;
   pointer-events: none;
 }
@@ -154,7 +154,7 @@
 }
 
 .random-cell {
-  color: var(--secondary-color);
+  color: var(--text-secondary);
   font-style: italic;
   font-size: 0.9rem;
   margin: 0;
@@ -204,7 +204,7 @@
     display: block;
     text-align: center;
     font-size: 0.8rem;
-    color: var(--tertiary-color);
+    color: var(--text-secondary);
     margin-bottom: 1rem;
 }
 
@@ -225,7 +225,7 @@
     margin: 0;
     padding-left: 1.5rem;
     font-size: 0.85rem;
-    color: var(--text-color);
+    color: var(--text-primary);
     opacity: 0.8;
     max-height: 100px;
     overflow-y: auto;
@@ -250,7 +250,7 @@
 
 .incomplete-header {
     font-size: 0.9rem;
-    color: var(--secondary-color);
+    color: var(--text-secondary);
     margin-bottom: 0.5rem;
 }
 
@@ -258,7 +258,7 @@
     margin: 0;
     padding-left: 1.5rem;
     font-size: 0.85rem;
-    color: var(--text-color);
+    color: var(--text-primary);
     opacity: 0.8;
     max-height: 150px;
     overflow-y: auto;
@@ -275,8 +275,8 @@
 .error-state {
   text-align: center;
   padding: 2rem;
-  color: var(--text-color);
-  background: var(--card-bg);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
   border-radius: 8px;
   box-shadow: 0 2px 4px var(--shadow-color);
 }

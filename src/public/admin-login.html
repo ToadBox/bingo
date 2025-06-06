@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bingo Admin Login</title>
+    <link rel="stylesheet" href="/css/common.css">
+    <link rel="stylesheet" href="/css/login.css">
+    <script type="module" src="/js/admin-login.js" defer></script>
+</head>
+<body>
+    <div class="login-container">
+        <h1>Bingo Admin</h1>
+        <form id="login-form" class="login-form">
+            <div class="form-group">
+                <label for="password">Admin Password</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+            <div id="error-message" class="error-message" style="display: none;"></div>
+            <button type="submit" class="login-button">Login</button>
+            <a href="/login.html" class="back-to-site">Back to Site Login</a>
+        </form>
+    </div>
+</body>
+</html> 

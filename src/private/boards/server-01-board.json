@@ -2,8 +2,8 @@
   "id": "server-01",
   "createdBy": "ToadBox",
   "createdAt": 1731090835322,
-  "lastUpdated": 1731090835323,
-  "title": "Server Trump #2",
+  "lastUpdated": 1749240368074,
+  "title": "ToadBox Trump #2",
   "cells": [
     [
       {
@@ -29,7 +29,7 @@
       {
         "label": "E1",
         "value": "White house gets sued",
-        "marked": false
+        "marked": true
       }
     ],
     [
@@ -51,7 +51,7 @@
       {
         "label": "D2",
         "value": "Jan 6 pardons",
-        "marked": false
+        "marked": true
       },
       {
         "label": "E2",
@@ -68,12 +68,12 @@
       {
         "label": "B3",
         "value": "DoGE.",
-        "marked": false
+        "marked": true
       },
       {
         "label": "C3",
         "value": "",
-        "marked": false
+        "marked": true
       },
       {
         "label": "D3",
@@ -140,5 +140,31 @@
         "marked": false
       }
     ]
+  ],
+  "editHistory": [
+    {
+      "type": "mark",
+      "cell": {
+        "row": 1,
+        "col": 0
+      },
+      "user": {
+        "ip": "::ffff:127.0.0.1",
+        "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0",
+        "timestamp": "2025-06-06T20:06:04.256Z"
+      }
+    },
+    {
+      "type": "unmark",
+      "cell": {
+        "row": 1,
+        "col": 0
+      },
+      "user": {
+        "ip": "::ffff:127.0.0.1",
+        "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0",
+        "timestamp": "2025-06-06T20:06:08.074Z"
+      }
+    }
   ]
 }

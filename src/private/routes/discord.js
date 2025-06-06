@@ -84,6 +84,16 @@ class DiscordCommands {
                             option.setName('cell').setDescription('Cell to clear (e.g., A4)').setRequired(true)
                         )
                 )
+                .addSubcommand(subcommand =>
+                    subcommand
+                        .setName('password')
+                        .setDescription('Get the current site password (admin only)')
+                )
+                .addSubcommand(subcommand =>
+                    subcommand
+                        .setName('image')
+                        .setDescription('Generate an image of the current bingo board')
+                )
         ];
     }
 
@@ -249,6 +259,16 @@ class DiscordCommands {
                     await this.handleViewOperation(interaction, board, subcommand);
                     break;
 
+                case 'password':
+                    // Password command is admin-only
+                    await this.handlePasswordCommand(interaction);
+                    break;
+
+                case 'image':
+                    // Generate board image
+                    await this.handleBoardImageCommand(interaction, board);
+                    break;
+
                 default:
                     // All other commands are checked against unified mode
                     if (this.boardService.mode === constants.BOARD_MODES.UNI) {
@@ -336,6 +356,8 @@ class DiscordCommands {
 • \`/bingo mark <cell>\` - Mark a cell as complete
 • \`/bingo unmark <cell>\` - Remove mark from a cell
 • \`/bingo clear <cell>\` - Clear a cell's contents
+• \`/bingo image\` - Generate an image of the current board
+• \`/bingo password\` - Get the site password (admin only)
 
 Note: Advanced board management commands are disabled in unified mode.`;
     }
@@ -343,6 +365,240 @@ Note: Advanced board management commands are disabled in unified mode.`;
     async handleAdvancedOperation(interaction, board, subcommand) {
         // Implementation of advanced operation handling
         throw new Error('Advanced operation handling not implemented');
+    }
+
+    async handlePasswordCommand(interaction) {
+
+        try {
+            // Get the site password from environment variable
+            const sitePassword = process.env.SITE_PASSWORD || 'dingusForgetsToSetPassword';
+            
+            await interaction.reply({
+                content: `🔑 Current site password: \`${sitePassword}\``,
+                ephemeral: true // Make sure only the requestor can see it
+            });
+            
+            logger.info('Password command executed', {
+                userId: interaction.user.id,
+                username: interaction.user.tag
+            });
+        } catch (error) {
+            logger.error('Failed to execute password command', {
+                error: error.message,
+                userId: interaction.user.id
+            });
+            throw error;
+        }
+    }
+
+    async handleBoardImageCommand(interaction, board) {
+        try {
+            // First, defer the reply since image generation might take some time
+            await interaction.deferReply();
+            
+            // Generate the board image
+            const { createCanvas, loadImage } = require('canvas');
+            const fs = require('fs');
+            const path = require('path');
+            
+            // Set up canvas with appropriate dimensions
+            const cellSize = 120;
+            const padding = 20;
+            const headerHeight = 60;
+            const width = cellSize * 5 + padding * 2;
+            const height = cellSize * 5 + padding * 2 + headerHeight;
+            
+            const canvas = createCanvas(width, height);
+            const ctx = canvas.getContext('2d');
+            
+            // Fill background
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, width, height);
+            
+            // Draw title
+            ctx.fillStyle = '#333333';
+            ctx.font = 'bold 24px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(board.title || 'Bingo Board', width / 2, padding + 30);
+            
+            // Draw grid
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 2;
+            
+            // Draw cells
+            for (let row = 0; row < 5; row++) {
+                for (let col = 0; col < 5; col++) {
+                    const cell = board.cells[row][col];
+                    const x = padding + col * cellSize;
+                    const y = padding + headerHeight + row * cellSize;
+                    
+                    // Draw cell background
+                    ctx.fillStyle = cell.marked ? '#e6ffe6' : '#ffffff';
+                    ctx.fillRect(x, y, cellSize, cellSize);
+                    
+                    // Draw cell border
+                    ctx.strokeRect(x, y, cellSize, cellSize);
+                    
+                    // Draw cell content
+                    if (cell.value) {
+                        if (cell.value.startsWith('image:')) {
+                            try {
+                                // Handle image content
+                                const imagePath = cell.value.substring(6);
+                                const fullImagePath = path.join(process.cwd(), 'src', 'public', imagePath);
+                                
+                                logger.debug('Loading image for board render', {
+                                    imagePath,
+                                    fullImagePath,
+                                    exists: fs.existsSync(fullImagePath)
+                                });
+                                
+                                if (fs.existsSync(fullImagePath)) {
+                                    const img = await loadImage(fullImagePath);
+                                    
+                                    // Calculate scaled dimensions to fit in cell
+                                    const scale = Math.min(
+                                        (cellSize - 10) / img.width,
+                                        (cellSize - 10) / img.height
+                                    );
+                                    
+                                    const imgWidth = img.width * scale;
+                                    const imgHeight = img.height * scale;
+                                    
+                                    // Center the image in the cell
+                                    const imgX = x + (cellSize - imgWidth) / 2;
+                                    const imgY = y + (cellSize - imgHeight) / 2;
+                                    
+                                    ctx.drawImage(img, imgX, imgY, imgWidth, imgHeight);
+                                }
+                            } catch (imageError) {
+                                // If image loading fails, show text instead
+                                ctx.fillStyle = '#ff0000';
+                                ctx.font = '10px Arial';
+                                ctx.textAlign = 'center';
+                                ctx.fillText('[Image Error]', x + cellSize / 2, y + cellSize / 2);
+                            }
+                        } else {
+                            // Handle text content
+                            ctx.fillStyle = '#000000';
+                            ctx.font = '14px Arial';
+                            ctx.textAlign = 'center';
+                            ctx.textBaseline = 'middle';
+                            
+                            // Wrap text if needed
+                            const maxWidth = cellSize - 10;
+                            const words = cell.value.split(' ');
+                            let line = '';
+                            let lines = [];
+                            
+                            for (const word of words) {
+                                const testLine = line + (line ? ' ' : '') + word;
+                                const metrics = ctx.measureText(testLine);
+                                
+                                if (metrics.width > maxWidth && line !== '') {
+                                    lines.push(line);
+                                    line = word;
+                                } else {
+                                    line = testLine;
+                                }
+                            }
+                            lines.push(line);
+                            
+                            // Limit to 3 lines max
+                            if (lines.length > 3) {
+                                lines = lines.slice(0, 2);
+                                lines.push('...');
+                            }
+                            
+                            // Draw the text lines
+                            const lineHeight = 18;
+                            const startY = y + cellSize / 2 - ((lines.length - 1) * lineHeight) / 2;
+                            
+                            lines.forEach((line, i) => {
+                                ctx.fillText(line, x + cellSize / 2, startY + i * lineHeight);
+                            });
+                        }
+                    }
+                    
+                    // Draw X if marked
+                    if (cell.marked) {
+                        ctx.strokeStyle = '#ff0000';
+                        ctx.lineWidth = 3;
+                        ctx.beginPath();
+                        ctx.moveTo(x + 10, y + 10);
+                        ctx.lineTo(x + cellSize - 10, y + cellSize - 10);
+                        ctx.moveTo(x + cellSize - 10, y + 10);
+                        ctx.lineTo(x + 10, y + cellSize - 10);
+                        ctx.stroke();
+                        ctx.strokeStyle = '#000000';
+                        ctx.lineWidth = 2;
+                    }
+                    
+                    // Draw cell label
+                    ctx.fillStyle = '#888888';
+                    ctx.font = '12px Arial';
+                    ctx.textAlign = 'left';
+                    ctx.textBaseline = 'top';
+                    ctx.fillText(cell.label, x + 5, y + 5);
+                }
+            }
+            
+            // Create a temporary file path for the image
+            const tempDir = path.join(process.cwd(), 'temp');
+            if (!fs.existsSync(tempDir)) {
+                fs.mkdirSync(tempDir, { recursive: true });
+            }
+            
+            const tempFilePath = path.join(tempDir, `board-${Date.now()}.png`);
+            
+            // Save canvas to file
+            const buffer = canvas.toBuffer('image/png');
+            fs.writeFileSync(tempFilePath, buffer);
+            
+            // Send the image file
+            await interaction.editReply({
+                content: `📊 Current Bingo Board: ${board.title}`,
+                files: [{ attachment: tempFilePath, name: 'bingo-board.png' }]
+            });
+            
+            // Clean up the temp file after sending
+            setTimeout(() => {
+                try {
+                    if (fs.existsSync(tempFilePath)) {
+                        fs.unlinkSync(tempFilePath);
+                    }
+                } catch (cleanupError) {
+                    logger.error('Failed to clean up temp image file', {
+                        error: cleanupError.message,
+                        path: tempFilePath
+                    });
+                }
+            }, 5000);
+            
+            logger.info('Board image generated successfully', {
+                userId: interaction.user.id,
+                boardId: board.id
+            });
+        } catch (error) {
+            logger.error('Failed to generate board image', {
+                error: error.message,
+                stack: error.stack,
+                userId: interaction.user.id,
+                boardId: board?.id
+            });
+            
+            // If we already deferred, edit the reply
+            if (interaction.deferred) {
+                await interaction.editReply({
+                    content: `❌ Error generating board image: ${error.message}`
+                });
+            } else {
+                await interaction.reply({
+                    content: `❌ Error generating board image: ${error.message}`,
+                    ephemeral: true
+                });
+            }
+        }
     }
 }
 

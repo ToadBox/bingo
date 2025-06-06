@@ -52,7 +52,13 @@ let passwordData = null;
 function initializePassword() {
   const sitePassword = process.env.SITE_PASSWORD || 'meme';
   passwordData = hashPassword(sitePassword);
-  logger.info('Password hash initialized');
+  
+  // Initialize admin password if it doesn't exist
+  if (!process.env.ADMIN_PASSWORD) {
+    process.env.ADMIN_PASSWORD = 'theGorper89'; // Default admin password
+  }
+  
+  logger.info('Password hashes initialized');
 }
 
 // Initialize on module load
@@ -100,10 +106,95 @@ router.post('/login', loginLimiter, (req, res) => {
   }
 });
 
-// Logout route
+// Admin login route
+router.post('/admin-login', loginLimiter, (req, res) => {
+  const { password } = req.body;
+
+  if (!password) {
+    return res.status(400).json({ error: 'Password is required' });
+  }
+
+  try {
+    // Verify admin password (simple comparison for now, could use hash in the future)
+    const adminPassword = process.env.ADMIN_PASSWORD || 'admin';
+    
+    if (password !== adminPassword) {
+      logger.warn('Failed admin login attempt', { ip: req.ip });
+      return res.status(401).json({ error: 'Invalid admin password' });
+    }
+
+    // Generate a secure token for admin
+    const token = crypto.randomBytes(32).toString('hex');
+    
+    // Set the admin token as a cookie
+    res.cookie('admin_token', token, {
+      httpOnly: true, // Cookie not accessible via JavaScript
+      secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      sameSite: 'strict', // Prevent CSRF
+      path: '/' // Apply to all routes
+    });
+
+    logger.info('Successful admin login', { ip: req.ip });
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Admin login error', { error: error.message });
+    res.status(500).json({ error: 'An error occurred during admin login' });
+  }
+});
+
+// Logout routes
 router.post('/logout', (req, res) => {
-  res.clearCookie('auth_token', { path: '/' });
+  // Clear auth cookies
+  res.clearCookie('auth_token', {
+    path: '/',
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict'
+  });
+  
+  res.clearCookie('admin_token', {
+    path: '/',
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict'
+  });
+  
+  // Clear session
+  if (req.session) {
+    req.session.destroy();
+  }
+  
+  logger.info('User logged out', { ip: req.ip });
   res.json({ success: true });
+});
+
+// Also support GET logout for direct browser access
+router.get('/logout', (req, res) => {
+  // Clear auth cookies
+  res.clearCookie('auth_token', {
+    path: '/',
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict'
+  });
+  
+  res.clearCookie('admin_token', {
+    path: '/',
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict'
+  });
+  
+  // Clear session
+  if (req.session) {
+    req.session.destroy();
+  }
+  
+  logger.info('User logged out via GET', { ip: req.ip });
+  
+  // Redirect to login page
+  res.redirect('/login.html');
 });
 
 module.exports = router; 

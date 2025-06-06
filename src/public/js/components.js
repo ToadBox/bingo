@@ -40,6 +40,16 @@ export function createHeader(title, showBackButton = false) {
   const controls = document.createElement('div');
   controls.className = 'controls';
   
+  // Admin link (only visible on main page)
+  if (!showBackButton) {
+    const adminLink = document.createElement('a');
+    adminLink.href = '/admin';
+    adminLink.className = 'admin-link';
+    adminLink.textContent = 'Admin';
+    adminLink.title = 'Admin Panel';
+    controls.appendChild(adminLink);
+  }
+  
   // Logout button
   const logoutButton = document.createElement('button');
   logoutButton.className = 'logout-button';

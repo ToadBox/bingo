@@ -155,7 +155,8 @@ class BoardService {
             createdAt: Date.now(),
             lastUpdated: Date.now(),
             title: `${userName}'s Bingo Board`.slice(0, 200),
-            cells: this.createEmptyGrid()
+            cells: this.createEmptyGrid(),
+            editHistory: [] // Add edit history array
         };
 
         return board;
@@ -230,11 +231,24 @@ class BoardService {
             throw new Error('Invalid cell position');
         }
 
-        if (!content || typeof content !== 'string') {
+        if (content === undefined || content === null || typeof content !== 'string') {
             throw new Error('Invalid content');
         }
 
         try {
+            // Handle empty string case for clearing cells
+            if (content === '') {
+                board.cells[row][col].value = '';
+                // Also unmark the cell when clearing
+                board.cells[row][col].marked = false;
+                logger.debug('Cleared cell content', { 
+                    boardId: board.id, 
+                    row, 
+                    col 
+                });
+                return this.saveBoard(board);
+            }
+            
             // Let imageHandler handle all URL validation and processing
             if (content.startsWith('http')) {
                 const localPath = await downloadAndSaveImage(content);
@@ -311,7 +325,24 @@ class BoardService {
     }
 
     isValidBoard(board) {
-        // Implement board structure validation logic
+        // Basic validation
+        if (!board || typeof board !== 'object') return false;
+        if (!board.id || !board.cells) return false;
+        
+        // Make sure the cells array has the correct structure
+        if (!Array.isArray(board.cells)) return false;
+        if (board.cells.length !== BOARD_SIZE) return false;
+        
+        // Make sure each row has the correct number of cells
+        for (const row of board.cells) {
+            if (!Array.isArray(row) || row.length !== BOARD_SIZE) return false;
+        }
+        
+        // Initialize edit history if it doesn't exist
+        if (!board.editHistory) {
+            board.editHistory = [];
+        }
+        
         return true;
     }
 

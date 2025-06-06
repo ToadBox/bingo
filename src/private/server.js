@@ -5,6 +5,7 @@ const { Client, GatewayIntentBits } = require('discord.js');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
+const session = require('express-session');
 const logger = require('./utils/logger');
 const DiscordCommands = require('./routes/discord');
 const apiRoutes = require('./routes/api');
@@ -49,6 +50,17 @@ class Server {
         this.app.use(express.json());
         // Add cookie parser middleware
         this.app.use(cookieParser());
+
+        // Add session middleware to prevent login loops
+        this.app.use(session({
+            secret: process.env.SESSION_SECRET || 'bingo-session-secret',
+            resave: false,
+            saveUninitialized: true,
+            cookie: { 
+                secure: process.env.NODE_ENV === 'production',
+                maxAge: 24 * 60 * 60 * 1000 // 24 hours
+            }
+        }));
 
         // Add cookie debugging middleware
         this.app.use((req, res, next) => {
@@ -192,6 +204,12 @@ class Server {
         this.app.get('/board/:boardId', (req, res) => {
             logger.debug('Serving board page', { boardId: req.params.boardId });
             res.sendFile(path.join(__dirname, '../public/board.html'));
+        });
+
+        // Admin page - requires authentication
+        this.app.get('/admin', (req, res) => {
+            logger.debug('Serving admin page');
+            res.sendFile(path.join(__dirname, '../public/admin.html'));
         });
 
         // Redirect root to login page or index based on auth status

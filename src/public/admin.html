@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bingo Admin</title>
+    <link rel="stylesheet" href="/css/common.css">
+    <link rel="stylesheet" href="/css/admin.css">
+    <script type="module" src="/js/admin.js" defer></script>
+</head>
+<body>
+    <div class="site-header">
+        <a href="/" class="back-button">
+            <span class="icon">←</span>
+        </a>
+        <h1 id="title">Bingo Admin</h1>
+        <div class="controls">
+            <button id="logout-btn" class="logout-button">Logout</button>
+        </div>
+    </div>
+
+    <div class="admin-container">
+        <div class="sidebar">
+            <h2>Admin Actions</h2>
+            <ul class="admin-menu">
+                <li><a href="#history" class="active" data-section="history">Edit History</a></li>
+                <li><a href="#users" data-section="users">User Activity</a></li>
+                <li><a href="#settings" data-section="settings">Settings</a></li>
+            </ul>
+        </div>
+        
+        <div class="main-content">
+            <section id="history-section" class="admin-section active">
+                <h2>Board Edit History</h2>
+                <div class="filter-controls">
+                    <div class="form-group">
+                        <label for="board-selector">Select Board:</label>
+                        <select id="board-selector"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="action-filter">Filter by Action:</label>
+                        <select id="action-filter">
+                            <option value="all">All Actions</option>
+                            <option value="set">Set Content</option>
+                            <option value="mark">Mark Cell</option>
+                            <option value="unmark">Unmark Cell</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="history-container">
+                    <table class="history-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Action</th>
+                                <th>Cell</th>
+                                <th>Content</th>
+                                <th>IP Address</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-table-body">
+                            <!-- History entries will be added here -->
+                        </tbody>
+                    </table>
+                    
+                    <div class="pagination">
+                        <button id="prev-page">Previous</button>
+                        <span id="page-info">Page 1 of 1</span>
+                        <button id="next-page">Next</button>
+                    </div>
+                </div>
+            </section>
+            
+            <section id="users-section" class="admin-section">
+                <h2>User Activity</h2>
+                <p>This section will display user activity and statistics.</p>
+                <!-- This will be populated with user activity data -->
+            </section>
+            
+            <section id="settings-section" class="admin-section">
+                <h2>Admin Settings</h2>
+                <div class="form-group">
+                    <label for="site-password">Site Password:</label>
+                    <div class="password-group">
+                        <input type="password" id="site-password" disabled>
+                        <button id="show-site-password" class="icon-button">👁️</button>
+                        <button id="edit-site-password" class="icon-button">✏️</button>
+                    </div>
+                    <div id="site-password-actions" style="display: none">
+                        <input type="password" id="new-site-password" placeholder="New site password">
+                        <button id="save-site-password">Save</button>
+                        <button id="cancel-site-password">Cancel</button>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-password">Admin Password:</label>
+                    <div class="password-group">
+                        <input type="password" id="admin-password" disabled>
+                        <button id="show-admin-password" class="icon-button">👁️</button>
+                        <button id="edit-admin-password" class="icon-button">✏️</button>
+                    </div>
+                    <div id="admin-password-actions" style="display: none">
+                        <input type="password" id="new-admin-password" placeholder="New admin password">
+                        <button id="save-admin-password">Save</button>
+                        <button id="cancel-admin-password">Cancel</button>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+</body>
+</html> 

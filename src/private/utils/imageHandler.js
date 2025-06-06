@@ -44,6 +44,12 @@ async function compressImage(inputBuffer, extension) {
 async function downloadAndSaveImage(url) {
     try {
         logger.debug('Starting image download', { url });
+        
+        // Validate URL format
+        if (!isValidImageUrl(url)) {
+            logger.warn('Invalid image URL format', { url });
+            throw new Error('Invalid image URL format');
+        }
 
         // Get extension
         const extension = path.extname(url.split('?')[0].toLowerCase());
@@ -65,25 +71,54 @@ async function downloadAndSaveImage(url) {
             return `/images/cells/${filename}`;
         }
 
-        // Download image
-        const response = await axios({
-            method: 'get',
-            url,
-            responseType: 'arraybuffer',
-            timeout: 5000,
-            validateStatus: status => status === 200
-        });
+        // Download image with retry logic
+        let response;
+        let retryCount = 0;
+        const maxRetries = 2;
+        
+        while (retryCount <= maxRetries) {
+            try {
+                response = await axios({
+                    method: 'get',
+                    url,
+                    responseType: 'arraybuffer',
+                    timeout: 5000, // 5 second timeout
+                    validateStatus: status => status === 200,
+                    maxContentLength: MAX_FILE_SIZE * 1.2, // Allow slightly larger for compression
+                    maxRedirects: 3
+                });
+                break; // Success, exit retry loop
+            } catch (err) {
+                retryCount++;
+                if (retryCount > maxRetries || 
+                    (err.response && err.response.status >= 400)) {
+                    // Don't retry if we get a 4xx/5xx status code or max retries reached
+                    throw err;
+                }
+                logger.warn(`Retry ${retryCount}/${maxRetries} for image download`, {
+                    url,
+                    error: err.message
+                });
+                // Wait before retrying (exponential backoff)
+                await new Promise(r => setTimeout(r, 1000 * retryCount));
+            }
+        }
 
         // Validate content type
         const contentType = response.headers['content-type'];
         if (!ALLOWED_MIME_TYPES.includes(contentType)) {
-            throw new Error('Invalid content type');
+            throw new Error(`Invalid content type: ${contentType}. Allowed: ${ALLOWED_MIME_TYPES.join(', ')}`);
         }
 
         let imageBuffer = response.data;
         const fileSize = imageBuffer.length;
 
-        // Compress if file is larger than 50MB
+        // Reject overly large files before compression attempt
+        if (fileSize > MAX_FILE_SIZE * 2) {
+            throw new Error(`Image too large (${Math.round(fileSize/1024/1024)}MB). Maximum size: ${Math.round(MAX_FILE_SIZE/1024/1024)}MB`);
+        }
+
+        // Compress if file is larger than MAX_FILE_SIZE
         if (fileSize > MAX_FILE_SIZE) {
             logger.debug('Compressing image', { 
                 originalSize: fileSize,
@@ -107,9 +142,41 @@ async function downloadAndSaveImage(url) {
     } catch (error) {
         logger.error('Image processing failed', {
             url,
-            error: error.message
+            error: error.message,
+            stack: error.stack
         });
         throw new Error(`Failed to process image: ${error.message}`);
+    }
+}
+
+// Helper function to validate image URLs
+function isValidImageUrl(url) {
+    try {
+        // Basic URL structure validation
+        const urlObj = new URL(url);
+        
+        // Must be http or https
+        if (!['http:', 'https:'].includes(urlObj.protocol)) {
+            return false;
+        }
+        
+        // Check for disallowed patterns
+        const disallowedPatterns = [
+            /^(localhost|127\.0\.0\.1|\[::1\])/i,  // Localhost
+            /^192\.168\./,                          // Private IP
+            /^10\./,                                // Private IP
+            /^172\.(1[6-9]|2[0-9]|3[0-1])\./,       // Private IP
+            /^file:/i                               // File protocol
+        ];
+        
+        if (disallowedPatterns.some(pattern => pattern.test(urlObj.hostname))) {
+            return false;
+        }
+        
+        return true;
+    } catch (error) {
+        // Not a valid URL
+        return false;
     }
 }
 

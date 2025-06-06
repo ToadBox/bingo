@@ -23,16 +23,23 @@ async function logout() {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
-            }
+            },
+            // Add credentials to ensure cookies are sent
+            credentials: 'same-origin'
         });
         
         if (response.ok) {
-            window.location.href = '/login';
+            console.log('Logout successful, redirecting to login page');
+            window.location.href = '/login.html';
         } else {
-            console.error('Logout failed');
+            console.error('Logout API call failed, trying direct navigation');
+            // Fallback to direct navigation if the API call fails
+            window.location.href = '/api/auth/logout';
         }
     } catch (error) {
         console.error('Logout error:', error);
+        // Network error fallback - go straight to login page
+        window.location.href = '/login.html';
     }
 }
 
