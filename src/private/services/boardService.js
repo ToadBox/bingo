@@ -27,7 +27,7 @@ const CACHE_CONFIG = {
     }
 };
 
-const ALLOWED_UNIFIED_COMMANDS = ['set', 'clear', 'mark', 'unmark'];
+const ALLOWED_UNIFIED_COMMANDS = ['set', 'clear', 'mark', 'unmark', 'image', 'password'];
 
 class BoardService {
     constructor(mode = BOARD_MODE) {
@@ -400,6 +400,12 @@ class BoardService {
                 clearBoard.cells[clearPos.row][clearPos.col].value = '';
                 clearBoard.cells[clearPos.row][clearPos.col].marked = false;
                 return await this.saveBoard(clearBoard);
+            case 'image':
+                // Image generation is handled in DiscordCommands
+                return args[0]; // Just return the board
+            case 'password':
+                // Password is handled in DiscordCommands
+                return null;
             default:
                 throw new Error(`Unknown command: ${command}`);
         }

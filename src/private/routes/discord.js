@@ -14,10 +14,80 @@ class DiscordCommands {
     }
 
     setupCommands() {
-        return [
-            new SlashCommandBuilder()
-                .setName('bingo')
-                .setDescription('Manage bingo boards')
+        // Base command builder with common operations
+        const bingoCommand = new SlashCommandBuilder()
+            .setName('bingo')
+            .setDescription('Manage bingo boards');
+
+        // Basic operations (always available in both modes)
+        bingoCommand
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('set')
+                    .setDescription('Set content in a bingo cell')
+                    .addStringOption(option =>
+                        option.setName('cell')
+                        .setDescription('Cell to update (e.g., A4)')
+                        .setRequired(true)
+                    )
+                    .addStringOption(option =>
+                        option.setName('type')
+                        .setDescription('Type of content to set')
+                        .setRequired(true)
+                        .addChoices(
+                            { name: 'Text', value: 'text' },
+                            { name: 'Image URL', value: 'image' }
+                        )
+                    )
+                    .addStringOption(option =>
+                        option.setName('content')
+                        .setDescription('Text or image URL to set in the cell')
+                        .setRequired(true)
+                    )
+            )
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('mark')
+                    .setDescription('Mark a cell with an X')
+                    .addStringOption(option =>
+                        option.setName('cell').setDescription('Cell to mark (e.g., A4)').setRequired(true)
+                    )
+            )
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('unmark')
+                    .setDescription('Remove the X from a cell')
+                    .addStringOption(option =>
+                        option.setName('cell').setDescription('Cell to unmark (e.g., A4)').setRequired(true)
+                    )
+            )
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('clear')
+                    .setDescription('Clear a cell\'s content')
+                    .addStringOption(option =>
+                        option.setName('cell').setDescription('Cell to clear (e.g., A4)').setRequired(true)
+                    )
+            )
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('password')
+                    .setDescription('Get the current site password')
+            );
+
+        // Only add the image command if not in unified mode or if allowed
+        if (this.boardService.mode !== constants.BOARD_MODES.UNI || 
+            this.boardService.isCommandAllowed('image')) {
+            bingoCommand.addSubcommand(subcommand =>
+                subcommand
+                    .setName('image')
+                    .setDescription('Generate an image of the current bingo board')
+            );
+        }
+
+        // Only add advanced commands if not in unified mode
+        if (this.boardService.mode !== constants.BOARD_MODES.UNI) {
+            bingoCommand
                 .addSubcommand(subcommand =>
                     subcommand
                         .setName('create')
@@ -30,71 +100,15 @@ class DiscordCommands {
                 )
                 .addSubcommand(subcommand =>
                     subcommand
-                        .setName('set')
-                        .setDescription('Set content in a bingo cell')
-                        .addStringOption(option =>
-                            option.setName('cell')
-                            .setDescription('Cell to update (e.g., A4)')
-                            .setRequired(true)
-                        )
-                        .addStringOption(option =>
-                            option.setName('type')
-                            .setDescription('Type of content to set')
-                            .setRequired(true)
-                            .addChoices(
-                                { name: 'Text', value: 'text' },
-                                { name: 'Image URL', value: 'image' }
-                            )
-                        )
-                        .addStringOption(option =>
-                            option.setName('content')
-                            .setDescription('Text or image URL to set in the cell')
-                            .setRequired(true)
-                        )
-                )
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('mark')
-                        .setDescription('Mark a cell with an X')
-                        .addStringOption(option =>
-                            option.setName('cell').setDescription('Cell to mark (e.g., A4)').setRequired(true)
-                        )
-                )
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('unmark')
-                        .setDescription('Remove the X from a cell')
-                        .addStringOption(option =>
-                            option.setName('cell').setDescription('Cell to unmark (e.g., A4)').setRequired(true)
-                        )
-                )
-                .addSubcommand(subcommand =>
-                    subcommand
                         .setName('title')
                         .setDescription('Set the bingo card title')
                         .addStringOption(option =>
                             option.setName('text').setDescription('New title for the bingo card').setRequired(true)
                         )
-                )
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('clear')
-                        .setDescription('Clear a cell\'s content')
-                        .addStringOption(option =>
-                            option.setName('cell').setDescription('Cell to clear (e.g., A4)').setRequired(true)
-                        )
-                )
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('password')
-                        .setDescription('Get the current site password (admin only)')
-                )
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('image')
-                        .setDescription('Generate an image of the current bingo board')
-                )
-        ];
+                );
+        }
+
+        return [bingoCommand];
     }
 
     async register(client) {
@@ -265,8 +279,12 @@ class DiscordCommands {
                     break;
 
                 case 'image':
-                    // Generate board image
-                    await this.handleBoardImageCommand(interaction, board);
+                    // Generate board image - now allowed in unified mode
+                    if (this.boardService.isCommandAllowed('image')) {
+                        await this.handleBoardImageCommand(interaction, board);
+                    } else {
+                        throw new Error('The image command is not available in this mode');
+                    }
                     break;
 
                 default:
@@ -357,7 +375,7 @@ class DiscordCommands {
 • \`/bingo unmark <cell>\` - Remove mark from a cell
 • \`/bingo clear <cell>\` - Clear a cell's contents
 • \`/bingo image\` - Generate an image of the current board
-• \`/bingo password\` - Get the site password (admin only)
+• \`/bingo password\` - Get the site password
 
 Note: Advanced board management commands are disabled in unified mode.`;
     }
@@ -557,7 +575,7 @@ Note: Advanced board management commands are disabled in unified mode.`;
             
             // Send the image file
             await interaction.editReply({
-                content: `📊 Current Bingo Board: ${board.title}`,
+                content: `Current Bingo Board: ${board.title}`,
                 files: [{ attachment: tempFilePath, name: 'bingo-board.png' }]
             });
             
