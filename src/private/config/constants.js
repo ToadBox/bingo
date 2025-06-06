@@ -17,6 +17,7 @@ module.exports = {
     IMAGES_DIR: path.join(__dirname, '../../public/images/cells'),
     DEFAULT_BOARD_TITLE: 'New Board, use /bingo title to change',
     OFFLINE_MODE: isDebugMode || process.env.OFFLINE_MODE === 'true',
+    LOGIN_PAGE: '/login.html',
     
     // Board Variables
     BOARD_SIZE: 5,

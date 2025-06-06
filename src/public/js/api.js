@@ -61,23 +61,52 @@ export async function createBoard(title, userId) {
 }
 
 export async function fetchBoard(boardId) {
-  const lastETag = localStorage.getItem(`board-${boardId}-ETag`);
-  
-  const headers = new Headers();
-  if (lastETag) {
-    headers.append('If-None-Match', lastETag);
-  }
+  try {
+    const lastETag = localStorage.getItem(`board-${boardId}-ETag`);
+    let cachedBoard = null;
+    
+    try {
+      cachedBoard = JSON.parse(localStorage.getItem(`board-${boardId}-data`));
+    } catch (e) {
+      // Invalid cache data, will fetch fresh
+    }
+    
+    const headers = new Headers();
+    if (lastETag) {
+      headers.append('If-None-Match', lastETag);
+    }
 
-  const response = await fetch(`/api/board/${boardId}`, { headers });
-  
-  const newETag = response.headers.get('ETag');
-  if (newETag) {
-    localStorage.setItem(`board-${boardId}-ETag`, newETag);
-  }
+    const response = await fetch(`/api/board/${boardId}`, { 
+      headers,
+      cache: 'no-cache',
+      credentials: 'same-origin'
+    });
+    
+    // Store new ETag if we got one
+    const newETag = response.headers.get('ETag');
+    if (newETag) {
+      localStorage.setItem(`board-${boardId}-ETag`, newETag);
+    }
 
-  if (response.status === 304) return null;
-  if (!response.ok) throw new Error('Board not found');
-  return response.json();
+    // 304 means use cached data
+    if (response.status === 304) {
+      if (!cachedBoard) {
+        throw new Error('Cache missing, please refresh');
+      }
+      return cachedBoard;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to load board: ${response.status} ${response.statusText}`);
+    }
+    
+    const board = await response.json();
+    // Store the fresh data in cache
+    localStorage.setItem(`board-${boardId}-data`, JSON.stringify(board));
+    return board;
+  } catch (error) {
+    throw new Error(`Error fetching board: ${error.message}`);
+  }
 }
 
 export async function setCell(boardId, row, col, content) {

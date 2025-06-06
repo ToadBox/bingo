@@ -1,0 +1,28 @@
+[Unit]
+Description=ToadBox Bingo Server
+After=network.target
+
+[Service]
+Type=simple
+User=yourusername  # Replace with your username
+WorkingDirectory=/path/to/bingo  # Replace with the actual path
+ExecStart=/usr/bin/npm run start:uni
+Restart=on-failure
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=bingo
+Environment=NODE_ENV=production
+Environment=SITE_PASSWORD=your_secure_password  # Replace with your secure password
+
+# Security enhancements
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+
+[Install]
+WantedBy=multi-user.target 

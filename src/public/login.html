@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="
+      default-src 'self' https://earthviewinc.com;
+      script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com https://*.cloudflareinsights.com;
+      img-src 'self' data: https://earthviewinc.com https://*.earthviewinc.com https://*.cloudflareinsights.com;
+      connect-src 'self' https://*.cloudflareinsights.com https://*.bingo.toadbox.net;
+  ">
+  <title>ToadBox Bingo - Login</title>
+  <link rel="stylesheet" href="/css/common.css">
+  <link rel="stylesheet" href="/css/login.css">
+  <link rel="icon" type="image/x-icon" href="https://earthviewinc.com/DSN/wwwearthviewinccom/Commerce/ProductImages/mn1_004498.jpg">
+  <script type="module" src="/js/theme.js"></script>
+</head>
+<body>
+  <div class="login-container">
+    <h1>ToadBox Bingo</h1>
+    <div id="login-form" class="login-form">
+      <div class="form-group">
+        <label for="password">Enter Password</label>
+        <input type="password" id="password" name="password" required autocomplete="current-password">
+      </div>
+      <button type="button" id="login-button">Enter</button>
+      <div id="error-message" class="error-message"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { initTheme } from '/js/theme.js';
+
+    // Initialize theme
+    document.addEventListener('DOMContentLoaded', () => {
+      console.log('DOM loaded, initializing login page');
+      initTheme();
+      
+      const passwordInput = document.getElementById('password');
+      const loginButton = document.getElementById('login-button');
+      const errorMessage = document.getElementById('error-message');
+
+      // Handle Enter key in password field
+      passwordInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          console.log('Enter key pressed');
+          e.preventDefault(); // Prevent form submission
+          attemptLogin();
+        }
+      });
+
+      // Handle button click
+      loginButton.addEventListener('click', (e) => {
+        console.log('Login button clicked');
+        e.preventDefault(); // Prevent any default action
+        attemptLogin();
+      });
+
+      // Login function
+      async function attemptLogin() {
+        const password = passwordInput.value;
+        
+        if (!password) {
+          console.log('No password entered');
+          errorMessage.textContent = 'Password is required';
+          return;
+        }
+        
+        console.log('Attempting login with password');
+        
+        // Show loading state
+        loginButton.disabled = true;
+        loginButton.textContent = 'Logging in...';
+        errorMessage.textContent = '';
+        
+        try {
+          console.log('Sending login request');
+          const response = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ password })
+          });
+          
+          console.log('Login response received:', response.status);
+          
+          if (response.ok) {
+            console.log('Login successful, redirecting to homepage');
+            
+            // Clear any existing cookie before redirect to ensure clean state
+            document.cookie.split(';').forEach(cookie => {
+              const trimmedCookie = cookie.trim();
+              if (trimmedCookie.startsWith('auth_token=')) {
+                console.log('Found existing auth_token cookie');
+              }
+            });
+            
+            // Redirect to the main page on successful login
+            console.log('Redirecting to homepage...');
+            window.location.href = '/';
+            
+            // Add a fallback redirect after a short delay
+            setTimeout(() => {
+              console.log('Fallback redirect triggered');
+              window.location.replace('/');
+            }, 1000);
+          } else {
+            const data = await response.json();
+            console.error('Login failed:', data);
+            errorMessage.textContent = data.error || 'Invalid password';
+            passwordInput.value = ''; // Clear password field
+            passwordInput.focus();
+          }
+        } catch (error) {
+          console.error('Login error:', error);
+          errorMessage.textContent = 'Error connecting to server';
+        } finally {
+          // Reset button state
+          loginButton.disabled = false;
+          loginButton.textContent = 'Enter';
+        }
+      }
+      
+      // Check if we're already logged in
+      fetch('/api/health')
+        .then(response => {
+          console.log('Health check response:', response.status);
+          if (response.status === 200) {
+            // Try accessing a protected resource to verify authentication
+            return fetch('/api/board/server-01');
+          }
+          return Promise.reject('Health check failed');
+        })
+        .then(response => {
+          console.log('Authentication check response:', response.status);
+          if (response.status === 200) {
+            console.log('Already authenticated, redirecting to homepage');
+            window.location.href = '/';
+          }
+        })
+        .catch(error => {
+          console.log('Auth check error (expected if not logged in):', error);
+          // Not authenticated, stay on login page
+        });
+    });
+  </script>
+</body>
+</html> 

@@ -4,9 +4,12 @@ const express = require('express');
 const { Client, GatewayIntentBits } = require('discord.js');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
 const logger = require('./utils/logger');
 const DiscordCommands = require('./routes/discord');
 const apiRoutes = require('./routes/api');
+const authRoutes = require('./routes/auth');
+const { isAuthenticated } = require('./middleware/auth');
 const constants = require('./config/constants');
 const boardService = require('./services/boardService');
 
@@ -44,6 +47,26 @@ class Server {
         
         // Security and parsing middleware
         this.app.use(express.json());
+        // Add cookie parser middleware
+        this.app.use(cookieParser());
+
+        // Add cookie debugging middleware
+        this.app.use((req, res, next) => {
+            const originalSetCookie = res.setHeader;
+            
+            // Intercept setHeader calls to log Set-Cookie
+            res.setHeader = function(name, value) {
+                if (name === 'Set-Cookie') {
+                    logger.debug('Setting cookie', { 
+                        path: req.path, 
+                        cookies: Array.isArray(value) ? value : [value] 
+                    });
+                }
+                return originalSetCookie.call(this, name, value);
+            };
+            
+            next();
+        });
 
         // Updated Helmet configuration
         const helmetConfig = {
@@ -113,6 +136,9 @@ class Server {
         });
         this.app.use('/api/', apiLimiter);
 
+        // Apply authentication middleware globally
+        this.app.use(isAuthenticated);
+
         // Static files and caching
         this.app.use(express.static(path.join(__dirname, '../public'), {
             setHeaders: (res, path) => {
@@ -156,6 +182,9 @@ class Server {
             next();
         });
 
+        // Authentication routes
+        this.app.use('/api/auth', authRoutes);
+
         // API routes
         this.app.use('/api', apiRoutes);
 
@@ -163,6 +192,22 @@ class Server {
         this.app.get('/board/:boardId', (req, res) => {
             logger.debug('Serving board page', { boardId: req.params.boardId });
             res.sendFile(path.join(__dirname, '../public/board.html'));
+        });
+
+        // Redirect root to login page or index based on auth status
+        this.app.get('/', (req, res) => {
+            // User is already authenticated via middleware
+            res.sendFile(path.join(__dirname, '../public/index.html'));
+        });
+
+        // Login page - direct access
+        this.app.get('/login.html', (req, res) => {
+            res.sendFile(path.join(__dirname, '../public/login.html'));
+        });
+
+        // Redirect to login page for unauthenticated access
+        this.app.get('/login', (req, res) => {
+            res.redirect(constants.LOGIN_PAGE);
         });
 
         // Improved error handling
@@ -235,8 +280,22 @@ class Server {
 
             // Disconnect Discord bot if running
             if (!constants.OFFLINE_MODE && this.client) {
-                await this.client.destroy();
-                logger.info('Discord bot disconnected');
+                try {
+                    await this.client.destroy();
+                    logger.info('Discord bot disconnected');
+                } catch (error) {
+                    logger.error('Error disconnecting Discord bot', { error: error.message });
+                }
+            }
+            
+            // Clean up any database connections or file handles
+            try {
+                if (boardService && typeof boardService.cleanup === 'function') {
+                    await boardService.cleanup();
+                    logger.info('Board service cleaned up');
+                }
+            } catch (error) {
+                logger.error('Error cleaning up board service', { error: error.message });
             }
 
             // Allow ongoing requests to finish (max 30s)
@@ -251,6 +310,24 @@ class Server {
         // Register shutdown handlers
         process.on('SIGTERM', () => shutdown('SIGTERM'));
         process.on('SIGINT', () => shutdown('SIGINT'));
+        
+        // Handle uncaught exceptions
+        process.on('uncaughtException', (error) => {
+            logger.error('Uncaught exception', { 
+                error: error.message,
+                stack: error.stack
+            });
+            shutdown('UNCAUGHT_EXCEPTION');
+        });
+        
+        // Handle unhandled promise rejections
+        process.on('unhandledRejection', (reason, promise) => {
+            logger.error('Unhandled promise rejection', { 
+                reason: reason.toString(),
+                stack: reason.stack || 'No stack trace available'
+            });
+            shutdown('UNHANDLED_REJECTION');
+        });
     }
 
     async start() {
