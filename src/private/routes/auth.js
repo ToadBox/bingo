@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
 const rateLimit = require('express-rate-limit');
-const crypto = require('crypto');
+const authService = require('../services/authService');
+const userModel = require('../models/userModel');
 
 // Rate limiting for login attempts to prevent brute force
 const loginLimiter = rateLimit({
@@ -18,54 +19,8 @@ const loginLimiter = rateLimit({
   }
 });
 
-// Helper to create a hash of the password (more secure than plain comparison)
-function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
-  // Use a more secure algorithm (sha256) with more iterations
-  const iterations = 10000;
-  const hash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha256').toString('hex');
-  return { hash, salt, iterations };
-}
-
-// Verify password against a hash
-function verifyPassword(password, storedHash, storedSalt, iterations = 10000) {
-  try {
-    // For the first deployment, we might not have a hash yet
-    if (!storedHash || !storedSalt) {
-      // Direct comparison with environment variable password (legacy)
-      const sitePassword = process.env.SITE_PASSWORD || 'toadbox';
-      return password === sitePassword;
-    }
-    
-    // Generate hash with the same salt and iterations
-    const hash = crypto.pbkdf2Sync(password, storedSalt, iterations, 64, 'sha256').toString('hex');
-    return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(storedHash));
-  } catch (error) {
-    logger.error('Password verification error', { error: error.message });
-    return false;
-  }
-}
-
-// Keep a hash of the site password for more secure comparison
-let passwordData = null;
-
-// Initialize the password hash on startup
-function initializePassword() {
-  const sitePassword = process.env.SITE_PASSWORD || 'meme';
-  passwordData = hashPassword(sitePassword);
-  
-  // Initialize admin password if it doesn't exist
-  if (!process.env.ADMIN_PASSWORD) {
-    process.env.ADMIN_PASSWORD = 'theGorper89'; // Default admin password
-  }
-  
-  logger.info('Password hashes initialized');
-}
-
-// Initialize on module load
-initializePassword();
-
-// Login route
-router.post('/login', loginLimiter, (req, res) => {
+// Site password login route
+router.post('/login', loginLimiter, async (req, res) => {
   const { password } = req.body;
 
   if (!password) {
@@ -73,41 +28,162 @@ router.post('/login', loginLimiter, (req, res) => {
   }
 
   try {
-    // Verify the password using the hashed version
-    const isValid = verifyPassword(
-      password, 
-      passwordData?.hash, 
-      passwordData?.salt,
-      passwordData?.iterations
-    );
+    // Get request info for auth
+    const requestInfo = {
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    };
     
-    if (!isValid) {
+    // Authenticate with site password
+    const authResult = await authService.authenticateWithPassword(password, requestInfo);
+    
+    if (!authResult) {
       logger.warn('Failed login attempt', { ip: req.ip });
       return res.status(401).json({ error: 'Invalid password' });
     }
 
-    // Generate a secure token
-    const token = crypto.randomBytes(32).toString('hex');
-    
     // Set the token as a cookie
-    res.cookie('auth_token', token, {
-      httpOnly: true, // Cookie not accessible via JavaScript
-      secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+    res.cookie('auth_token', authResult.session.token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: 'strict', // Prevent CSRF
-      path: '/' // Apply to all routes
+      sameSite: 'strict',
+      path: '/'
     });
 
-    logger.info('Successful login', { ip: req.ip });
-    res.json({ success: true });
+    logger.info('Successful login with site password', { ip: req.ip });
+    res.json({
+      success: true,
+      user: {
+        id: authResult.user.id,
+        username: authResult.user.username,
+        isAnonymous: true
+      }
+    });
   } catch (error) {
     logger.error('Login error', { error: error.message });
     res.status(500).json({ error: 'An error occurred during login' });
   }
 });
 
+// Local user login route
+router.post('/local-login', loginLimiter, async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  try {
+    // Get request info for auth
+    const requestInfo = {
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    };
+    
+    // Authenticate with local credentials
+    const authResult = await authService.authenticateLocal(email, password, requestInfo);
+    
+    if (!authResult) {
+      logger.warn('Failed local login attempt', { email, ip: req.ip });
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Set the token as a cookie
+    res.cookie('auth_token', authResult.session.token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      sameSite: 'strict',
+      path: '/'
+    });
+
+    logger.info('Successful local login', { 
+      userId: authResult.user.id,
+      email,
+      ip: req.ip 
+    });
+    
+    res.json({
+      success: true,
+      user: {
+        id: authResult.user.id,
+        username: authResult.user.username,
+        email: authResult.user.email
+      }
+    });
+  } catch (error) {
+    logger.error('Local login error', { error: error.message });
+    res.status(500).json({ error: 'An error occurred during login' });
+  }
+});
+
+// User registration route
+router.post('/register', loginLimiter, async (req, res) => {
+  const { username, email, password } = req.body;
+
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: 'Username, email, and password are required' });
+  }
+
+  try {
+    // Check if user already exists
+    const existingUser = await userModel.getUserByEmail(email);
+    
+    if (existingUser) {
+      return res.status(409).json({ error: 'User with this email already exists' });
+    }
+    
+    // Create new user
+    const user = await userModel.createUser({
+      username,
+      email,
+      auth_provider: 'local',
+      auth_id: email,
+      password
+    });
+
+    // Get request info for auth
+    const requestInfo = {
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    };
+    
+    // Create session for new user
+    const session = await authService.createSession(user.id, requestInfo);
+
+    // Set auth token cookie
+    res.cookie('auth_token', session.token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      sameSite: 'strict',
+      path: '/'
+    });
+
+    logger.info('New user registered', { 
+      userId: user.id,
+      username,
+      email,
+      ip: req.ip 
+    });
+    
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email
+      }
+    });
+  } catch (error) {
+    logger.error('Registration error', { error: error.message });
+    res.status(500).json({ error: 'An error occurred during registration' });
+  }
+});
+
 // Admin login route
-router.post('/admin-login', loginLimiter, (req, res) => {
+router.post('/admin-login', loginLimiter, async (req, res) => {
   const { password } = req.body;
 
   if (!password) {
@@ -115,7 +191,7 @@ router.post('/admin-login', loginLimiter, (req, res) => {
   }
 
   try {
-    // Verify admin password (simple comparison for now, could use hash in the future)
+    // Verify admin password
     const adminPassword = process.env.ADMIN_PASSWORD || 'admin';
     
     if (password !== adminPassword) {
@@ -123,16 +199,34 @@ router.post('/admin-login', loginLimiter, (req, res) => {
       return res.status(401).json({ error: 'Invalid admin password' });
     }
 
-    // Generate a secure token for admin
-    const token = crypto.randomBytes(32).toString('hex');
+    // Create admin user if not exists
+    let adminUser = await userModel.getUserByAuthId('admin', 'admin');
     
-    // Set the admin token as a cookie
-    res.cookie('admin_token', token, {
-      httpOnly: true, // Cookie not accessible via JavaScript
-      secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+    if (!adminUser) {
+      adminUser = await userModel.createUser({
+        username: 'Admin',
+        auth_provider: 'admin',
+        auth_id: 'admin',
+        is_admin: true
+      });
+    }
+    
+    // Get request info for auth
+    const requestInfo = {
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    };
+    
+    // Create session for admin
+    const session = await authService.createSession(adminUser.id, requestInfo);
+
+    // Set admin token cookie
+    res.cookie('admin_token', session.token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: 'strict', // Prevent CSRF
-      path: '/' // Apply to all routes
+      sameSite: 'strict',
+      path: '/'
     });
 
     logger.info('Successful admin login', { ip: req.ip });
@@ -143,58 +237,214 @@ router.post('/admin-login', loginLimiter, (req, res) => {
   }
 });
 
-// Logout routes
-router.post('/logout', (req, res) => {
-  // Clear auth cookies
-  res.clearCookie('auth_token', {
-    path: '/',
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict'
-  });
+// Google OAuth login
+router.post('/google', async (req, res) => {
+  const { idToken } = req.body;
   
-  res.clearCookie('admin_token', {
-    path: '/',
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict'
-  });
-  
-  // Clear session
-  if (req.session) {
-    req.session.destroy();
+  if (!idToken) {
+    return res.status(400).json({ error: 'ID Token is required' });
   }
   
-  logger.info('User logged out', { ip: req.ip });
-  res.json({ success: true });
+  try {
+    // Get request info for auth
+    const requestInfo = {
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    };
+    
+    // Authenticate with Google
+    const authResult = await authService.authenticateGoogle(idToken, requestInfo);
+    
+    if (!authResult) {
+      return res.status(401).json({ error: 'Invalid Google authentication' });
+    }
+    
+    // Set the token as a cookie
+    res.cookie('auth_token', authResult.session.token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      sameSite: 'strict',
+      path: '/'
+    });
+    
+    logger.info('Successful Google login', { 
+      userId: authResult.user.id,
+      email: authResult.user.email,
+      ip: req.ip 
+    });
+    
+    res.json({
+      success: true,
+      user: {
+        id: authResult.user.id,
+        username: authResult.user.username,
+        email: authResult.user.email
+      }
+    });
+  } catch (error) {
+    logger.error('Google authentication error', { error: error.message });
+    res.status(500).json({ error: 'An error occurred during Google authentication' });
+  }
+});
+
+// Discord OAuth login endpoints
+router.get('/discord', (req, res) => {
+  const clientId = process.env.DISCORD_CLIENT_ID;
+  const redirectUri = `${process.env.APP_URL}/api/auth/discord/callback`;
+  const scope = 'identify email';
+  
+  const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}`;
+  
+  res.redirect(discordAuthUrl);
+});
+
+router.get('/discord/callback', async (req, res) => {
+  const { code } = req.query;
+  
+  if (!code) {
+    return res.redirect('/login.html?error=discord_auth_failed');
+  }
+  
+  try {
+    // Get request info for auth
+    const requestInfo = {
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    };
+    
+    const redirectUri = `${process.env.APP_URL}/api/auth/discord/callback`;
+    
+    // Authenticate with Discord
+    const authResult = await authService.authenticateDiscord(code, redirectUri, requestInfo);
+    
+    if (!authResult) {
+      return res.redirect('/login.html?error=discord_auth_failed');
+    }
+    
+    // Set the token as a cookie
+    res.cookie('auth_token', authResult.session.token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      sameSite: 'strict',
+      path: '/'
+    });
+    
+    logger.info('Successful Discord login', { 
+      userId: authResult.user.id,
+      username: authResult.user.username,
+      ip: req.ip 
+    });
+    
+    // Redirect to home
+    res.redirect('/');
+  } catch (error) {
+    logger.error('Discord authentication error', { error: error.message });
+    res.redirect('/login.html?error=discord_auth_failed');
+  }
+});
+
+// User info endpoint
+router.get('/user', async (req, res) => {
+  try {
+    // User is already authenticated via middleware
+    if (!req.user) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+    
+    res.json({
+      id: req.user.id,
+      username: req.user.username,
+      email: req.user.email,
+      isAdmin: req.isAdmin
+    });
+  } catch (error) {
+    logger.error('User info error', { error: error.message });
+    res.status(500).json({ error: 'An error occurred getting user info' });
+  }
+});
+
+// Logout routes
+router.post('/logout', async (req, res) => {
+  const token = req.cookies?.auth_token;
+  const adminToken = req.cookies?.admin_token;
+  
+  try {
+    // Logout both user and admin sessions
+    if (token) {
+      await authService.logout(token);
+      res.clearCookie('auth_token', {
+        path: '/',
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict'
+      });
+    }
+    
+    if (adminToken) {
+      await authService.logout(adminToken);
+      res.clearCookie('admin_token', {
+        path: '/',
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict'
+      });
+    }
+    
+    // Clear session
+    if (req.session) {
+      req.session.destroy();
+    }
+    
+    logger.info('User logged out', { ip: req.ip });
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Logout error', { error: error.message });
+    res.status(500).json({ error: 'An error occurred during logout' });
+  }
 });
 
 // Also support GET logout for direct browser access
-router.get('/logout', (req, res) => {
-  // Clear auth cookies
-  res.clearCookie('auth_token', {
-    path: '/',
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict'
-  });
+router.get('/logout', async (req, res) => {
+  const token = req.cookies?.auth_token;
+  const adminToken = req.cookies?.admin_token;
   
-  res.clearCookie('admin_token', {
-    path: '/',
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict'
-  });
-  
-  // Clear session
-  if (req.session) {
-    req.session.destroy();
+  try {
+    // Logout both user and admin sessions
+    if (token) {
+      await authService.logout(token);
+      res.clearCookie('auth_token', {
+        path: '/',
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict'
+      });
+    }
+    
+    if (adminToken) {
+      await authService.logout(adminToken);
+      res.clearCookie('admin_token', {
+        path: '/',
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict'
+      });
+    }
+    
+    // Clear session
+    if (req.session) {
+      req.session.destroy();
+    }
+    
+    logger.info('User logged out via GET', { ip: req.ip });
+    
+    // Redirect to login page
+    res.redirect('/login.html');
+  } catch (error) {
+    logger.error('Logout error', { error: error.message });
+    res.redirect('/login.html');
   }
-  
-  logger.info('User logged out via GET', { ip: req.ip });
-  
-  // Redirect to login page
-  res.redirect('/login.html');
 });
 
 module.exports = router; 

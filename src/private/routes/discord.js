@@ -2,6 +2,10 @@ const { SlashCommandBuilder } = require('discord.js');
 const boardService = require('../services/boardService');
 const logger = require('../utils/logger');
 const constants = require('../config/constants');
+const express = require('express');
+const passport = require('passport');
+const axios = require('axios');
+const authService = require('../services/authService');
 
 class DiscordCommands {
     constructor(boardService) {
@@ -620,4 +624,118 @@ Note: Advanced board management commands are disabled in unified mode.`;
     }
 }
 
-module.exports = DiscordCommands;
+const router = express.Router();
+
+// Discord authentication route
+router.get('/discord', passport.authenticate('discord', {
+  scope: ['identify', 'email', 'guilds']
+}));
+
+// Discord callback route
+router.get('/discord/callback', async (req, res, next) => {
+  passport.authenticate('discord', async (err, user, info) => {
+    if (err) {
+      logger.error('Discord authentication error', { error: err.message });
+      return res.redirect('/login?error=discord_auth_failed');
+    }
+    
+    if (!user) {
+      logger.warn('No user returned from Discord auth', { info });
+      return res.redirect('/login?error=discord_auth_failed');
+    }
+    
+    try {
+      // Extract Discord user info
+      const { id, username, email, accessToken, refreshToken } = user;
+      
+      logger.info('Discord authentication successful', { 
+        discordId: id, 
+        username 
+      });
+      
+      // Fetch user guilds
+      let guildInfo = null;
+      try {
+        const response = await axios.get('https://discord.com/api/users/@me/guilds', {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+        
+        if (response.status === 200) {
+          guildInfo = response.data;
+          logger.debug('Retrieved Discord guild info', { 
+            guildCount: guildInfo.length,
+            discordId: id 
+          });
+        }
+      } catch (guildError) {
+        logger.error('Failed to fetch Discord guilds', {
+          error: guildError.message
+        });
+      }
+      
+      // Find guild IDs to store for approval logic
+      const guilds = guildInfo || [];
+      const guildIds = guilds.map(g => g.id).join(',');
+      const approvedGuildIds = process.env.APPROVED_DISCORD_GUILDS 
+        ? process.env.APPROVED_DISCORD_GUILDS.split(',') 
+        : [];
+        
+      // Check if user is in any approved guilds
+      const isInApprovedGuild = guilds.some(guild => approvedGuildIds.includes(guild.id));
+      
+      if (isInApprovedGuild) {
+        logger.info('Discord user is in approved guild', { 
+          discordId: id,
+          username
+        });
+      }
+      
+      // Create or update user through auth service
+      const userData = {
+        username: username,
+        email: email,
+        auth_provider: 'discord',
+        auth_id: id,
+        discord_guild_id: guildIds
+      };
+      
+      const { sessionToken, user: dbUser } = await authService.authenticateDiscordUser(userData);
+      
+      // Set auth token cookie
+      res.cookie('auth_token', sessionToken, {
+        path: '/',
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+      });
+      
+      // If admin, set admin token
+      if (dbUser.is_admin === 1) {
+        res.cookie('admin_token', sessionToken, {
+          path: '/',
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'strict',
+          maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+        });
+      }
+      
+      // Check approval status and redirect accordingly
+      if (dbUser.approval_status === 'pending') {
+        return res.redirect('/pending-approval.html');
+      } else {
+        return res.redirect('/');
+      }
+    } catch (error) {
+      logger.error('Failed to process Discord authentication', {
+        error: error.message
+      });
+      res.redirect('/login?error=discord_auth_failed');
+    }
+  })(req, res, next);
+});
+
+module.exports = { DiscordCommands, router };

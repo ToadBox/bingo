@@ -493,6 +493,377 @@ class BoardService {
         }
         return requestedId;
     }
+
+    /**
+     * Get the history of a cell
+     * @param {string} boardId - Board ID
+     * @param {number} row - Cell row
+     * @param {number} col - Cell column
+     * @param {Object} options - Query options
+     * @returns {Array} - Array of history entries
+     */
+    async getCellHistory(boardId, row, col, options = {}) {
+        try {
+            if (this.mode === 'database') {
+                // Initialize boardModel if not already loaded
+                if (!this.boardModel) {
+                    this.boardModel = require('../models/boardModel');
+                }
+
+                // Get the cell history from database
+                return await this.boardModel.getCellHistory(boardId, row, col, options);
+            } else {
+                // JSON mode - get history from board's editHistory
+                const board = await this.loadBoard(boardId);
+                if (!board || !board.editHistory) {
+                    return [];
+                }
+
+                // Find entries for this cell
+                const columnLetter = COLUMNS[col];
+                const cellId = `${columnLetter}${row + 1}`;
+
+                const history = board.editHistory
+                    .filter(entry => entry.cellId === cellId)
+                    .map(entry => ({
+                        id: entry.timestamp, // Use timestamp as ID
+                        cell_id: cellId,
+                        value: entry.value || '',
+                        type: entry.type || 'text',
+                        marked: entry.marked || false,
+                        created_at: new Date(entry.timestamp).toISOString(),
+                        created_by: null,
+                        user_name: board.createdBy || 'Unknown'
+                    }))
+                    .sort((a, b) => b.id - a.id); // Sort by timestamp (newest first)
+
+                // Apply pagination
+                const { limit = 20, offset = 0 } = options;
+                return history.slice(offset, offset + limit);
+            }
+        } catch (error) {
+            logger.error('Failed to get cell history', {
+                error: error.message,
+                boardId, row, col
+            });
+            return [];
+        }
+    }
+
+    /**
+     * Get board settings
+     * @param {string} boardId - Board ID
+     * @returns {Object} - Board settings
+     */
+    async getBoardSettings(boardId) {
+        try {
+            if (this.mode === 'database') {
+                // Initialize boardModel if not already loaded
+                if (!this.boardModel) {
+                    this.boardModel = require('../models/boardModel');
+                }
+                
+                const settings = await this.boardModel.getBoardSettings(boardId);
+                if (settings) {
+                    return settings;
+                }
+            }
+            
+            // JSON mode or fallback - return default settings
+            const config = require('../utils/configLoader');
+            return config.get('boards.defaultSettings', {
+                chatEnabled: true,
+                mentionNotifications: true,
+                editNotifications: true,
+                publicChat: true,
+                requireApproval: false
+            });
+        } catch (error) {
+            logger.error('Failed to get board settings', {
+                error: error.message,
+                boardId
+            });
+            
+            // Return default settings on error
+            return {
+                chatEnabled: true,
+                mentionNotifications: true,
+                editNotifications: true,
+                publicChat: true,
+                requireApproval: false
+            };
+        }
+    }
+
+    /**
+     * Update board settings
+     * @param {string} boardId - Board ID
+     * @param {Object} settings - Board settings
+     * @returns {boolean} - Success status
+     */
+    async updateBoardSettings(boardId, settings) {
+        try {
+            if (this.mode === 'database') {
+                // Initialize boardModel if not already loaded
+                if (!this.boardModel) {
+                    this.boardModel = require('../models/boardModel');
+                }
+                
+                return await this.boardModel.updateBoardSettings(boardId, settings);
+            } else {
+                // JSON mode - store settings in memory
+                // Since we can't persist in JSON mode, we'll just return success
+                logger.info('Settings updated in memory only (JSON mode)', {
+                    boardId,
+                    settings
+                });
+                return true;
+            }
+        } catch (error) {
+            logger.error('Failed to update board settings', {
+                error: error.message,
+                boardId
+            });
+            return false;
+        }
+    }
+
+    /**
+     * Update a cell
+     * @param {string} boardId - Board ID
+     * @param {string} cellId - Cell ID (e.g. "A1")
+     * @param {string} value - Cell value
+     * @param {boolean} marked - Whether the cell is marked
+     * @param {string} type - Cell type (text, image)
+     * @returns {Object} - Updated cell and success status
+     */
+    async updateCell(boardId, cellId, value, marked, type = 'text') {
+        try {
+            logger.debug('Updating cell', { 
+                boardId, 
+                cellId, 
+                value: !!value, 
+                marked, 
+                type 
+            });
+            
+            if (this.mode === 'database') {
+                // Initialize boardModel if not already loaded
+                if (!this.boardModel) {
+                    this.boardModel = require('../models/boardModel');
+                }
+                
+                // Parse cell ID to get row and column
+                const cellPosition = this.parseCell(cellId);
+                
+                // Find or create board in database
+                let board = await this.boardModel.getBoardByUUID(boardId);
+                
+                if (!board) {
+                    // Try to load from JSON and import
+                    const jsonBoard = await this.loadBoard(boardId);
+                    
+                    if (jsonBoard) {
+                        // We need to get the user ID, but since this operation might be 
+                        // happening without a user request, we'll use a system user ID
+                        board = await this.boardModel.importFromJson(jsonBoard, 1); // ID 1 is usually system
+                    } else {
+                        return { success: false, error: 'Board not found' };
+                    }
+                }
+                
+                // Update cell in database
+                const cell = await this.boardModel.updateCell(board.id, cellPosition.row, cellPosition.col, {
+                    value,
+                    type: type || 'text',
+                    marked: !!marked
+                });
+                
+                if (!cell) {
+                    return { success: false, error: 'Failed to update cell' };
+                }
+                
+                return {
+                    success: true,
+                    cell: {
+                        value: cell.value,
+                        marked: !!cell.marked,
+                        type: cell.type || 'text'
+                    }
+                };
+            } else {
+                // Legacy JSON mode
+                const board = await this.loadBoard(boardId);
+                
+                if (!board) {
+                    return { success: false, error: 'Board not found' };
+                }
+                
+                // Parse cell ID
+                const cellPosition = this.parseCell(cellId);
+                
+                if (!this.isValidCellPosition(cellPosition.row, cellPosition.col)) {
+                    return { success: false, error: 'Invalid cell position' };
+                }
+                
+                // Update the cell
+                const cell = board.cells[cellPosition.row][cellPosition.col];
+                cell.value = value !== undefined ? value : cell.value;
+                cell.marked = marked !== undefined ? !!marked : cell.marked;
+                cell.type = type || cell.type || 'text';
+                
+                // Add to edit history if it exists
+                if (board.editHistory) {
+                    const history = {
+                        cellId,
+                        timestamp: Date.now(),
+                        value: cell.value,
+                        marked: cell.marked
+                    };
+                    
+                    board.editHistory.push(history);
+                    
+                    // Limit history size
+                    const maxHistoryItems = 100;
+                    if (board.editHistory.length > maxHistoryItems) {
+                        board.editHistory = board.editHistory.slice(-maxHistoryItems);
+                    }
+                }
+                
+                // Save the board
+                await this.saveBoard(board);
+                
+                return {
+                    success: true,
+                    cell: {
+                        value: cell.value,
+                        marked: cell.marked,
+                        type: cell.type || 'text'
+                    }
+                };
+            }
+        } catch (error) {
+            logger.error('Failed to update cell', {
+                error: error.message,
+                boardId, cellId
+            });
+            return { success: false, error: 'Internal server error' };
+        }
+    }
+
+    /**
+     * Get a board by ID
+     * @param {string} boardId - Board ID
+     * @returns {Object|null} - Board or null if not found
+     */
+    async getBoard(boardId) {
+        try {
+            if (this.mode === 'database') {
+                if (!this.boardModel) {
+                    // Lazy load the board model to avoid circular dependencies
+                    this.boardModel = require('../models/boardModel');
+                }
+                const board = await this.boardModel.getBoardByUUID(boardId);
+                if (!board) {
+                    // Try legacy JSON as fallback
+                    return await this.loadBoard(boardId);
+                }
+                
+                // Format for frontend compatibility
+                return {
+                    id: board.uuid,
+                    title: board.title,
+                    createdBy: null, // For compatibility with old format
+                    createdAt: new Date(board.created_at).getTime(),
+                    lastUpdated: new Date(board.last_updated).getTime(),
+                    cells: board.cells,
+                    editHistory: [] // For compatibility with old format
+                };
+            } else {
+                // Legacy mode - get board from JSON files
+                return await this.loadBoard(boardId);
+            }
+        } catch (error) {
+            logger.error('Failed to get board', {
+                error: error.message,
+                boardId
+            });
+            return null;
+        }
+    }
+
+    /**
+     * Delete a board
+     * @param {string} boardId - Board ID
+     * @returns {boolean} - Success status
+     */
+    async deleteBoard(boardId) {
+        try {
+            logger.info('Deleting board', { boardId });
+            
+            if (this.mode === 'database') {
+                // Initialize boardModel if not already loaded
+                if (!this.boardModel) {
+                    this.boardModel = require('../models/boardModel');
+                }
+                
+                // Find board in database
+                const board = await this.boardModel.getBoardByUUID(boardId);
+                
+                if (board) {
+                    // Delete board from database
+                    const success = await this.boardModel.deleteBoard(board.id);
+                    
+                    if (!success) {
+                        logger.warn('Failed to delete board from database', { boardId });
+                    } else {
+                        logger.info('Board deleted from database', { boardId });
+                    }
+                }
+            }
+            
+            // Always try to delete the JSON file as well
+            try {
+                const boardPath = this.getBoardPath(boardId);
+                
+                // Check if file exists before attempting to delete
+                const fileExists = await fs.access(boardPath)
+                    .then(() => true)
+                    .catch(() => false);
+                
+                if (fileExists) {
+                    await fs.unlink(boardPath);
+                    logger.info('Board JSON file deleted', { boardId, path: boardPath });
+                } else {
+                    logger.warn('Board JSON file not found', { boardId, path: boardPath });
+                    // Only return false if we're in JSON mode and file doesn't exist
+                    if (this.mode !== 'database') {
+                        return false;
+                    }
+                }
+                
+                // Clear from cache if present
+                this.boardCache.delete(boardId);
+                this.cacheTimestamps.delete(boardId);
+                this.lastModified.delete(boardId);
+                this.etags.delete(boardId);
+                
+                return true;
+            } catch (error) {
+                logger.error('Failed to delete board JSON file', { 
+                    error: error.message,
+                    boardId 
+                });
+                return this.mode === 'database'; // Return true in database mode, false in JSON mode
+            }
+        } catch (error) {
+            logger.error('Failed to delete board', {
+                error: error.message,
+                boardId
+            });
+            return false;
+        }
+    }
 }
 
 module.exports = new BoardService();

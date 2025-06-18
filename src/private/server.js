@@ -1,6 +1,7 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 const express = require('express');
+const http = require('http');
 const { Client, GatewayIntentBits } = require('discord.js');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -13,10 +14,18 @@ const authRoutes = require('./routes/auth');
 const { isAuthenticated } = require('./middleware/auth');
 const constants = require('./config/constants');
 const boardService = require('./services/boardService');
+const database = require('./models/database');
+const userRoutes = require('./routes/users');
+const notificationRoutes = require('./routes/notifications');
+const adminUsersRoutes = require('./routes/admin/users');
+const configLoader = require('./utils/configLoader');
+const chatRoutes = require('./routes/chat');
+const websocketServer = require('./websocket');
 
 class Server {
     constructor() {
         this.app = express();
+        this.server = http.createServer(this.app);
         this.isShuttingDown = false;
         this.connections = new Set();
         
@@ -39,6 +48,9 @@ class Server {
             this.setupDiscordBot();
         }
 
+        // Initialize WebSocket server
+        this.setupWebSockets();
+        
         this.setupShutdownHandlers();
     }
 
@@ -199,6 +211,15 @@ class Server {
 
         // API routes
         this.app.use('/api', apiRoutes);
+        
+        // User routes
+        this.app.use('/api/users', userRoutes);
+
+        // Notification routes
+        this.app.use('/api/notifications', notificationRoutes);
+
+        // Admin routes
+        this.app.use('/api/admin/users', adminUsersRoutes);
 
         // Board view route
         this.app.get('/board/:boardId', (req, res) => {
@@ -227,6 +248,9 @@ class Server {
         this.app.get('/login', (req, res) => {
             res.redirect(constants.LOGIN_PAGE);
         });
+
+        // Chat routes - protected with authentication
+        this.app.use('/api/chat', isAuthenticated, chatRoutes);
 
         // Improved error handling
         this.app.use((err, req, res, next) => {
@@ -270,6 +294,21 @@ class Server {
         // Handle Discord errors
         this.client.on('error', error => {
             logger.error('Discord client error', { error: error.message });
+        });
+    }
+
+    setupWebSockets() {
+        // Initialize WebSocket server with HTTP server
+        this.io = websocketServer.initialize(this.server);
+        
+        logger.info('WebSocket server attached to HTTP server');
+        
+        // Handle WebSocket server shutdown
+        this.server.on('close', () => {
+            if (this.io) {
+                this.io.close();
+                logger.info('WebSocket server closed');
+            }
         });
     }
 
@@ -350,26 +389,50 @@ class Server {
 
     async start() {
         try {
-            // Start Express server with server reference
-            this.server = this.app.listen(constants.PORT, () => {
-                logger.info(`Server is running on http://localhost:${constants.PORT} ${constants.OFFLINE_MODE ? '(OFFLINE MODE)' : ''}`);
-            });
-
-            // Start Discord bot only if not in offline mode
-            if (!constants.OFFLINE_MODE) {
-                await this.client.login(process.env.TOKEN);
-                logger.info('Discord bot logged in successfully');
+            // Load configuration
+            configLoader.loadConfig();
+            
+            // Initialize database
+            await database.initialize();
+            
+            // Connect to Discord if not in offline mode
+            if (!constants.OFFLINE_MODE && this.client && process.env.DISCORD_BOT_TOKEN) {
+                await this.client.login(process.env.DISCORD_BOT_TOKEN);
             }
+            
+            // Continue with normal startup
+            const PORT = process.env.PORT || 3000;
+            
+            // Use this.server instead of this.app for listening
+            this.server.listen(PORT, () => {
+                logger.info(`Server running on port ${PORT}`);
+            });
+            
+            // Track active connections for graceful shutdown
+            this.server.on('connection', connection => {
+                this.connections.add(connection);
+                connection.on('close', () => {
+                    this.connections.delete(connection);
+                });
+            });
         } catch (error) {
-            logger.error('Failed to start server', { error: error.message });
+            logger.error('Failed to start server', error);
             process.exit(1);
         }
     }
 }
 
-// Create and start server
-const server = new Server();
-server.start().catch(error => {
-    logger.error('Critical server error', { error: error.message });
-    process.exit(1);
-});
+// Export server class
+module.exports = Server;
+
+// Start server if this file is run directly
+if (require.main === module) {
+    const server = new Server();
+    server.start().catch(error => {
+        logger.error('Server startup failed', {
+            error: error.message,
+            stack: error.stack
+        });
+        process.exit(1);
+    });
+}

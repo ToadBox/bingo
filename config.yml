@@ -1,0 +1,68 @@
+site:
+  title: ToadBox Bingo
+  description: A customizable bingo board site
+  defaultTheme: light
+  availableThemes:
+    - light
+    - dark
+    - high-contrast
+  maxBoardsPerUser: 10
+  maxCellsPerBoard: 25
+boards:
+  defaultSettings:
+    size: 5
+    freeSpace: true
+    freeSpacePosition:
+      row: 2
+      col: 2
+    chatEnabled: true
+    publicChat: true
+    mentionNotifications: true
+    editNotifications: true
+    requireApproval: false
+notifications:
+  enabled: true
+  defaultPreferences:
+    mentions: true
+    edits: true
+    approvals: true
+    system: true
+anonymousUsers:
+  enabled: true
+  wordLists:
+    adjectives:
+      - Happy
+      - Quiet
+      - Sleepy
+      - Brave
+      - Mighty
+      - Clever
+      - Wise
+      - Gentle
+      - Swift
+    nouns:
+      - Panda
+      - Tiger
+      - Eagle
+      - Dolphin
+      - Wolf
+      - Fox
+      - Bear
+      - Hawk
+      - Lion
+usernames:
+  minLength: 3
+  maxLength: 20
+  allowSpecialChars: false
+storage:
+  images:
+    maxSizeMB: 5
+    allowedTypes:
+      - image/jpeg
+      - image/png
+      - image/gif
+    path: ./uploads/images
+logging:
+  level: info
+  logToFiles: true
+  logPath: ./logs

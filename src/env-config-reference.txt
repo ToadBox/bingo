@@ -1,0 +1,37 @@
+# Bingo Server Configuration Reference
+
+# Server
+PORT=3000
+NODE_ENV=development
+SITE_URL=http://localhost:3000
+
+# Database
+DB_PATH=./data/bingo.db
+
+# Authentication
+# Set to 'true' to use anonymous authentication mode, 'false' to require login
+ALLOW_ANONYMOUS=true
+SESSION_SECRET=your_session_secret_here
+
+# For basic site login with anonymous users
+SITE_PASSWORD=your_site_password_here
+
+# OAuth Providers
+GOOGLE_CLIENT_ID=your_google_client_id_here
+GOOGLE_CLIENT_SECRET=your_google_client_secret_here
+GOOGLE_CALLBACK_URL=http://localhost:{PORT}/api/auth/google/callback
+
+DISCORD_CLIENT_ID=your_discord_client_id_here
+DISCORD_CLIENT_SECRET=your_discord_client_secret_here
+DISCORD_CALLBACK_URL=http://localhost{PORT}/api/auth/discord/callback
+
+# Comma-separated list of Discord guild IDs whose members get auto-approved
+APPROVED_DISCORD_GUILDS=123456789012345678,234567890123456789
+
+# Root admin account (created automatically on first start)
+ROOT_ADMIN_USERNAME=admin
+ROOT_ADMIN_PASSWORD=change_this_password
+ROOT_ADMIN_EMAIL=admin@example.com
+
+# Logging
+LOG_LEVEL=info 

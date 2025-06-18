@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Offline - Bingo Board</title>
+  <link rel="stylesheet" href="/css/variables.css">
+  <link rel="stylesheet" href="/css/common.css">
+  <link rel="manifest" href="/manifest.json">
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 1rem;
+      text-align: center;
+    }
+    
+    .offline-container {
+      max-width: 500px;
+      background-color: var(--bg-secondary);
+      border-radius: 12px;
+      padding: 2rem;
+      box-shadow: 0 4px 8px var(--shadow-color);
+    }
+    
+    .offline-icon {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      color: var(--accent-color);
+    }
+    
+    h1 {
+      color: var(--text-primary);
+      font-size: 1.75rem;
+      margin-bottom: 1rem;
+    }
+    
+    p {
+      color: var(--text-secondary);
+      margin-bottom: 1.5rem;
+      line-height: 1.5;
+    }
+    
+    .btn {
+      display: inline-block;
+      background-color: var(--accent-color);
+      color: white;
+      padding: 0.75rem 1.5rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 500;
+      margin: 0.5rem;
+      border: none;
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+    }
+    
+    .btn:hover {
+      background-color: var(--accent-color-hover);
+    }
+    
+    .btn-secondary {
+      background-color: var(--bg-hover);
+      color: var(--text-primary);
+    }
+    
+    .btn-secondary:hover {
+      background-color: var(--bg-active);
+    }
+    
+    .cached-content {
+      margin-top: 2rem;
+      border-top: 1px solid var(--border-color);
+      padding-top: 1.5rem;
+    }
+    
+    .cached-list {
+      display: none;
+      margin-top: 1rem;
+      list-style: none;
+      padding: 0;
+      text-align: left;
+    }
+    
+    .cached-list li {
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--border-color);
+    }
+    
+    .cached-list li a {
+      color: var(--accent-color);
+      text-decoration: none;
+    }
+    
+    .cached-list li a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="offline-container">
+    <div class="offline-icon">📶</div>
+    <h1>You're Offline</h1>
+    <p>It seems you're not connected to the internet. Some features of Bingo Board may not work properly while offline.</p>
+    
+    <div>
+      <button class="btn" id="retry-btn">Try Again</button>
+      <a href="/" class="btn btn-secondary">Go to Home</a>
+    </div>
+    
+    <div class="cached-content">
+      <p>You can still access some previously visited pages while offline:</p>
+      <ul class="cached-list" id="cached-pages">
+        <li><a href="/">Home</a></li>
+      </ul>
+    </div>
+  </div>
+  
+  <script>
+    // Try to reconnect
+    document.getElementById('retry-btn').addEventListener('click', () => {
+      window.location.reload();
+    });
+    
+    // Check if offline or online
+    function updateOnlineStatus() {
+      if (navigator.onLine) {
+        document.querySelector('.offline-icon').textContent = '🌐';
+        document.querySelector('h1').textContent = 'Connecting...';
+        document.querySelector('p').textContent = 'You are now online. Attempting to reconnect...';
+        setTimeout(() => {
+          window.location.reload();
+        }, 1500);
+      } else {
+        document.querySelector('.offline-icon').textContent = '📶';
+        document.querySelector('h1').textContent = 'You\'re Offline';
+        document.querySelector('p').textContent = 'It seems you\'re not connected to the internet. Some features of Bingo Board may not work properly while offline.';
+      }
+    }
+    
+    window.addEventListener('online', updateOnlineStatus);
+    window.addEventListener('offline', updateOnlineStatus);
+    updateOnlineStatus();
+    
+    // Show cached pages if available
+    if ('caches' in window) {
+      caches.open('bingo-app-v1').then(cache => {
+        cache.keys().then(requests => {
+          if (requests.length > 1) { // More than just this offline page
+            const cachedList = document.getElementById('cached-pages');
+            cachedList.innerHTML = '';
+            cachedList.style.display = 'block';
+            
+            // Show HTML pages only
+            requests.filter(request => {
+              const url = new URL(request.url);
+              return url.pathname.endsWith('.html') || 
+                     url.pathname === '/' ||
+                     url.pathname.includes('/board/');
+            }).forEach(request => {
+              const url = new URL(request.url);
+              let label = url.pathname;
+              
+              // Make labels more user-friendly
+              if (url.pathname === '/') {
+                label = 'Home';
+              } else if (url.pathname === '/index.html') {
+                label = 'Home';
+              } else if (url.pathname === '/login.html') {
+                label = 'Login';
+              } else if (url.pathname.includes('/board/')) {
+                const boardId = url.pathname.split('/').pop();
+                label = `Board: ${boardId}`;
+              }
+              
+              const item = document.createElement('li');
+              const link = document.createElement('a');
+              link.href = request.url;
+              link.textContent = label;
+              item.appendChild(link);
+              cachedList.appendChild(item);
+            });
+          }
+        });
+      });
+    }
+  </script>
+</body>
+</html> 

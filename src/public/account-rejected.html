@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Account Rejected</title>
+  <link rel="stylesheet" href="css/common.css">
+  <link rel="stylesheet" href="css/login.css">
+  <style>
+    .rejected-container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 2rem;
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      box-shadow: 0 2px 8px var(--shadow-color);
+      text-align: center;
+    }
+    
+    .status-icon {
+      font-size: 48px;
+      color: #e74c3c;
+      margin-bottom: 1rem;
+    }
+    
+    .logout-btn {
+      margin-top: 1.5rem;
+      min-width: 150px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>Account Rejected</h1>
+    </header>
+    
+    <main>
+      <div class="rejected-container">
+        <div class="status-icon">❌</div>
+        <h2>Your account registration has been rejected</h2>
+        <p>We're sorry, but your account registration has been rejected by an administrator.</p>
+        <p>If you believe this is an error, please contact the site administrators.</p>
+        
+        <button id="logout-btn" class="btn primary-btn logout-btn">Log Out</button>
+      </div>
+    </main>
+  </div>
+  
+  <script>
+    // Check auth status
+    async function checkAuthStatus() {
+      try {
+        const response = await fetch('/api/auth/user');
+        if (!response.ok) {
+          // Not authenticated, redirect to login
+          window.location.href = '/login.html';
+          return;
+        }
+        
+        const data = await response.json();
+        
+        // If approved somehow, redirect to home
+        if (data.user && data.user.approval_status === 'approved') {
+          window.location.href = '/';
+        }
+        
+        // If pending, redirect to pending page
+        if (data.user && data.user.approval_status === 'pending') {
+          window.location.href = '/pending-approval.html';
+        }
+        
+      } catch (error) {
+        console.error('Failed to check auth status', error);
+        window.location.href = '/login.html';
+      }
+    }
+    
+    // Setup logout button
+    document.getElementById('logout-btn').addEventListener('click', async () => {
+      try {
+        const response = await fetch('/api/auth/logout', {
+          method: 'POST'
+        });
+        
+        window.location.href = '/login.html';
+      } catch (error) {
+        console.error('Failed to logout', error);
+      }
+    });
+    
+    // Initialize page
+    checkAuthStatus();
+  </script>
+</body>
+</html> 

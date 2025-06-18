@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Account Pending Approval</title>
+  <link rel="stylesheet" href="css/common.css">
+  <link rel="stylesheet" href="css/login.css">
+  <style>
+    .pending-container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 2rem;
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      box-shadow: 0 2px 8px var(--shadow-color);
+    }
+    
+    .status-icon {
+      font-size: 48px;
+      color: var(--accent-color);
+      margin-bottom: 1rem;
+      text-align: center;
+    }
+    
+    .notification-list {
+      margin-top: 2rem;
+      border-top: 1px solid var(--border-color);
+      padding-top: 1rem;
+    }
+    
+    .notification {
+      padding: 0.75rem;
+      margin-bottom: 0.75rem;
+      background: var(--bg-hover);
+      border-radius: 6px;
+    }
+    
+    .notification-time {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      margin-top: 0.25rem;
+    }
+    
+    .logout-btn {
+      margin-top: 1.5rem;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>Account Pending Approval</h1>
+    </header>
+    
+    <main>
+      <div class="pending-container">
+        <div class="status-icon">⏳</div>
+        <h2>Your account is awaiting approval</h2>
+        <p>Thank you for registering! Your account is currently pending approval from an administrator.</p>
+        <p>You will receive a notification once your account has been approved. Please check back later.</p>
+        
+        <div class="notification-list">
+          <h3>Notifications</h3>
+          <div id="notifications-container">
+            <p id="no-notifications" class="text-center">No notifications yet</p>
+          </div>
+        </div>
+        
+        <button id="logout-btn" class="btn primary-btn logout-btn">Log Out</button>
+      </div>
+    </main>
+  </div>
+  
+  <script>
+    // Check auth status
+    async function checkAuthStatus() {
+      try {
+        const response = await fetch('/api/auth/user');
+        if (!response.ok) {
+          // Not authenticated, redirect to login
+          window.location.href = '/login.html';
+          return;
+        }
+        
+        const data = await response.json();
+        
+        // If approved somehow, redirect to home
+        if (data.user && data.user.approval_status === 'approved') {
+          window.location.href = '/';
+        }
+        
+        // If rejected, show rejection message
+        if (data.user && data.user.approval_status === 'rejected') {
+          window.location.href = '/account-rejected.html';
+        }
+        
+      } catch (error) {
+        console.error('Failed to check auth status', error);
+        window.location.href = '/login.html';
+      }
+    }
+    
+    // Fetch notifications
+    async function fetchNotifications() {
+      try {
+        const response = await fetch('/api/notifications?limit=5');
+        
+        if (!response.ok) {
+          return;
+        }
+        
+        const data = await response.json();
+        const notifications = data.notifications || [];
+        
+        const notificationsContainer = document.getElementById('notifications-container');
+        const noNotificationsElement = document.getElementById('no-notifications');
+        
+        if (notifications.length > 0) {
+          notificationsContainer.innerHTML = '';
+          
+          notifications.forEach(notification => {
+            const notificationElement = document.createElement('div');
+            notificationElement.className = 'notification';
+            
+            const messageElement = document.createElement('div');
+            messageElement.className = 'notification-message';
+            messageElement.textContent = notification.message;
+            
+            const timeElement = document.createElement('div');
+            timeElement.className = 'notification-time';
+            timeElement.textContent = new Date(notification.created_at).toLocaleString();
+            
+            notificationElement.appendChild(messageElement);
+            notificationElement.appendChild(timeElement);
+            
+            notificationsContainer.appendChild(notificationElement);
+          });
+        }
+      } catch (error) {
+        console.error('Failed to fetch notifications', error);
+      }
+    }
+    
+    // Setup logout button
+    document.getElementById('logout-btn').addEventListener('click', async () => {
+      try {
+        const response = await fetch('/api/auth/logout', {
+          method: 'POST'
+        });
+        
+        window.location.href = '/login.html';
+      } catch (error) {
+        console.error('Failed to logout', error);
+      }
+    });
+    
+    // Initialize page
+    checkAuthStatus();
+    fetchNotifications();
+    
+    // Periodically check auth status and notifications
+    setInterval(checkAuthStatus, 30000);
+    setInterval(fetchNotifications, 10000);
+  </script>
+</body>
+</html> 
