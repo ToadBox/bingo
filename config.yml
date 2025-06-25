@@ -8,6 +8,7 @@ site:
     - high-contrast
   maxBoardsPerUser: 10
   maxCellsPerBoard: 25
+  serverUsername: server
 boards:
   defaultSettings:
     size: 5

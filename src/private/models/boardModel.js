@@ -2,6 +2,8 @@ const { v4: uuidv4 } = require('uuid');
 const database = require('./database');
 const logger = require('../utils/logger');
 const constants = require('../config/constants');
+const SlugGenerator = require('../utils/slugGenerator');
+const configLoader = require('../utils/configLoader');
 
 class BoardModel {
   constructor() {
@@ -40,7 +42,8 @@ class BoardModel {
       isPublic = false, 
       description = '',
       size = this.defaultBoardSize,
-      freeSpace = true
+      freeSpace = true,
+      createdByName = null
     } = boardData;
     
     const uuid = boardData.uuid || `user-${uuidv4()}`;
@@ -50,19 +53,40 @@ class BoardModel {
       const db = database.getDb();
       
       return await database.transaction(async (db) => {
-        // Create board record with size information
+        // Generate slug
+        let slug;
+        if (!createdBy) {
+          // Server board
+          const serverUsername = configLoader.get('site.serverUsername', 'server');
+          slug = SlugGenerator.generateServerSlug(title, serverUsername);
+        } else {
+          // User board - generate unique slug for this user
+          const checkSlugExists = async (testSlug) => {
+            const existing = await db.get(`
+              SELECT id FROM boards 
+              WHERE slug = ? AND created_by = ?
+            `, [testSlug, createdBy]);
+            return !!existing;
+          };
+
+          slug = await SlugGenerator.generateUniqueSlug(title, checkSlugExists);
+        }
+
+        // Create board record with size information and slug
         const boardResult = await db.run(`
-          INSERT INTO boards (uuid, title, created_by, is_public, description, settings)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO boards (uuid, title, slug, created_by, is_public, description, settings)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
         `, [
           uuid, 
           title, 
+          slug,
           createdBy, 
           isPublic ? 1 : 0, 
           description,
           JSON.stringify({
             size: boardSize,
-            freeSpace
+            freeSpace,
+            createdByName
           })
         ]);
         
@@ -79,6 +103,7 @@ class BoardModel {
           id: boardId,
           uuid,
           title,
+          slug,
           size: boardSize
         });
         
@@ -132,7 +157,7 @@ class BoardModel {
     try {
       const db = database.getDb();
       const board = await db.get(`
-        SELECT id, uuid, title, created_by, created_at, last_updated, is_public
+        SELECT id, uuid, title, slug, created_by, created_at, last_updated, is_public, description, settings
         FROM boards WHERE uuid = ?
       `, [uuid]);
       
@@ -155,111 +180,250 @@ class BoardModel {
   }
 
   /**
-   * Get all boards
-   * @param {Object} options - Filter options
-   * @returns {Array} - Array of board objects
+   * Get board by username and slug
+   * @param {string} username - Username (or 'server' for server boards)
+   * @param {string} slug - Board slug
+   * @returns {Object|null} - Board object or null if not found
    */
-  async getAllBoards(options = {}) {
-    const { userId, includePublic = true, limit, offset = 0 } = options;
-    let query = `
-      SELECT id, uuid, title, created_by, created_at, last_updated, is_public
-      FROM boards
-      WHERE 1=1
-    `;
-    const params = [];
-    
-    // Filter by user if specified
-    if (userId) {
-      query += ' AND (created_by = ? OR is_public = 1)';
-      params.push(userId);
-    } else if (includePublic) {
-      query += ' AND is_public = 1';
-    }
-    
-    query += ' ORDER BY last_updated DESC';
-    
-    // Add limit and offset if specified
-    if (limit) {
-      query += ' LIMIT ? OFFSET ?';
-      params.push(limit, offset);
-    }
-    
+  async getBoardByUsernameAndSlug(username, slug) {
     try {
       const db = database.getDb();
+      
+      let query;
+      let params;
+      
+      if (username === 'server') {
+        // Server board - no specific user
+        query = `
+          SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, b.last_updated, 
+                 b.is_public, b.description, b.settings
+          FROM boards b
+          WHERE b.slug = ? AND b.created_by IS NULL
+        `;
+        params = [slug];
+      } else {
+        // User board
+        query = `
+          SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, b.last_updated, 
+                 b.is_public, b.description, b.settings, u.username
+          FROM boards b
+          JOIN users u ON b.created_by = u.id
+          WHERE u.username = ? AND b.slug = ?
+        `;
+        params = [username, slug];
+      }
+      
+      const board = await db.get(query, params);
+      
+      if (!board) {
+        return null;
+      }
+      
+      // Get cells for the board
+      const cells = await this._getBoardCells(board.id);
+      board.cells = this._formatCellsAsGrid(cells);
+      
+      return board;
+    } catch (error) {
+      logger.error('Failed to get board by username and slug', {
+        error: error.message,
+        username,
+        slug
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Get anonymous board by slug
+   * @param {string} slug - Board slug
+   * @returns {Object|null} - Board object or null if not found
+   */
+  async getBoardByAnonymousSlug(slug) {
+    try {
+      const db = database.getDb();
+      
+      // Anonymous boards are created by users with auth_provider = 'anonymous'
+      const query = `
+        SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, b.last_updated, 
+               b.is_public, b.description, b.settings, u.username, u.auth_provider
+        FROM boards b
+        JOIN users u ON b.created_by = u.id
+        WHERE b.slug = ? AND u.auth_provider = 'anonymous'
+      `;
+      
+      const board = await db.get(query, [slug]);
+      
+      if (!board) {
+        return null;
+      }
+      
+      // Get cells for the board
+      const cells = await this._getBoardCells(board.id);
+      board.cells = this._formatCellsAsGrid(cells);
+      
+      // Extract createdByName from settings if available
+      if (board.settings) {
+        try {
+          const settings = JSON.parse(board.settings);
+          board.createdByName = settings.createdByName || 'Anonymous';
+        } catch (e) {
+          board.createdByName = 'Anonymous';
+        }
+      }
+      
+      return board;
+    } catch (error) {
+      logger.error('Failed to get anonymous board by slug', {
+        error: error.message,
+        slug
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Get all boards with optional filtering
+   * @param {Object} options - Query options
+   * @returns {Array} - Array of boards
+   */
+  async getAllBoards(options = {}) {
+    const {
+      userId = null,
+      includePublic = true,
+      limit = 50,
+      offset = 0,
+      sortBy = 'last_updated',
+      sortOrder = 'DESC',
+      searchTerm = null
+    } = options;
+
+    try {
+      const db = database.getDb();
+      
+      let query = `
+        SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, b.last_updated, 
+               b.is_public, b.description, b.settings,
+               u.username as creator_username,
+               COUNT(c.id) as cellCount,
+               SUM(CASE WHEN c.marked = 1 THEN 1 ELSE 0 END) as markedCount
+        FROM boards b
+        LEFT JOIN users u ON b.created_by = u.id
+        LEFT JOIN cells c ON b.id = c.board_id AND c.value IS NOT NULL AND c.value != ''
+        WHERE 1=1
+      `;
+      
+      const params = [];
+      
+      // Add user filter
+      if (userId) {
+        if (includePublic) {
+          query += ` AND (b.created_by = ? OR b.is_public = 1)`;
+          params.push(userId);
+        } else {
+          query += ` AND b.created_by = ?`;
+          params.push(userId);
+        }
+      } else if (includePublic) {
+        query += ` AND b.is_public = 1`;
+      }
+      
+      // Add search filter
+      if (searchTerm) {
+        query += ` AND (b.title LIKE ? OR b.description LIKE ?)`;
+        params.push(`%${searchTerm}%`, `%${searchTerm}%`);
+      }
+      
+      // Group by board
+      query += ` GROUP BY b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, b.last_updated, 
+                 b.is_public, b.description, b.settings, u.username`;
+      
+      // Add sorting
+      const validSortColumns = ['created_at', 'last_updated', 'title'];
+      const validSortOrders = ['ASC', 'DESC'];
+      
+      if (validSortColumns.includes(sortBy) && validSortOrders.includes(sortOrder.toUpperCase())) {
+        query += ` ORDER BY b.${sortBy} ${sortOrder.toUpperCase()}`;
+      } else {
+        query += ` ORDER BY b.last_updated DESC`;
+      }
+      
+      // Add pagination
+      query += ` LIMIT ? OFFSET ?`;
+      params.push(limit, offset);
+      
       const boards = await db.all(query, params);
       
-      // Get cell count and marked count for each board
-      const boardsWithStats = await Promise.all(boards.map(async (board) => {
-        const stats = await this._getBoardStats(board.id);
-        return {
-          ...board,
-          cellCount: stats.cellCount,
-          markedCount: stats.markedCount
-        };
-      }));
+      logger.debug('Retrieved boards', {
+        count: boards.length,
+        userId,
+        includePublic,
+        searchTerm
+      });
       
-      return boardsWithStats;
+      return boards;
     } catch (error) {
       logger.error('Failed to get all boards', {
         error: error.message,
-        userId,
-        includePublic
+        options
       });
-      return [];
+      throw error;
     }
   }
 
   /**
    * Update board
-   * @param {number} boardId - Board ID
-   * @param {Object} boardData - Board data to update
-   * @returns {Object|null} - Updated board object or null if failed
+   * @param {number} id - Board ID
+   * @param {Object} updates - Updates to apply
+   * @returns {Object|null} - Updated board or null if not found
    */
-  async updateBoard(boardId, boardData) {
-    const { title, isPublic } = boardData;
-    const updateFields = [];
-    const params = [];
-    
-    // Build update query dynamically
-    if (title !== undefined) {
-      updateFields.push('title = ?');
-      params.push(title);
-    }
-    
-    if (isPublic !== undefined) {
-      updateFields.push('is_public = ?');
-      params.push(isPublic ? 1 : 0);
-    }
-    
-    if (updateFields.length === 0) {
-      return await this.getBoardById(boardId);
-    }
-    
-    // Always update last_updated timestamp
-    updateFields.push('last_updated = CURRENT_TIMESTAMP');
-    
-    // Add boardId to params
-    params.push(boardId);
-    
+  async updateBoard(id, updates) {
     try {
       const db = database.getDb();
-      const result = await db.run(`
-        UPDATE boards
-        SET ${updateFields.join(', ')}
-        WHERE id = ?
-      `, params);
       
-      if (result.changes > 0) {
-        return await this.getBoardById(boardId);
+      const allowedUpdates = ['title', 'description', 'is_public', 'settings', 'slug'];
+      const updateFields = [];
+      const updateValues = [];
+      
+      for (const [key, value] of Object.entries(updates)) {
+        if (allowedUpdates.includes(key)) {
+          updateFields.push(`${key} = ?`);
+          updateValues.push(value);
+        }
       }
       
-      return null;
+      if (updateFields.length === 0) {
+        logger.warn('No valid updates provided', { id, updates });
+        return this.getBoardById(id);
+      }
+      
+      // Add last_updated timestamp
+      updateFields.push('last_updated = CURRENT_TIMESTAMP');
+      updateValues.push(id);
+      
+      const query = `
+        UPDATE boards 
+        SET ${updateFields.join(', ')} 
+        WHERE id = ?
+      `;
+      
+      const result = await db.run(query, updateValues);
+      
+      if (result.changes === 0) {
+        logger.warn('Board not found for update', { id });
+        return null;
+      }
+      
+      logger.info('Board updated successfully', { id, updates });
+      
+      return this.getBoardById(id);
     } catch (error) {
       logger.error('Failed to update board', {
         error: error.message,
-        boardId
+        id,
+        updates
       });
-      return null;
+      throw error;
     }
   }
 

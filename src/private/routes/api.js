@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
-const boardService = require('../services/boardService');
 const boardModel = require('../models/boardModel');
-const { COLUMNS } = require('../config/constants');
+const userModel = require('../models/userModel');
+const { isAuthenticated } = require('../middleware/auth');
+// Removed COLUMNS import as we're using database-driven board sizes
 
 // Helper function to measure elapsed time
 const getElapsedMs = (start) => {
@@ -16,59 +17,29 @@ router.get('/boards', async (req, res) => {
   const startTime = process.hrtime();
   
   try {
-    let boards;
-    
-    if (req.query.db === 'true') {
-      // Get boards from database
-      const options = {
-        userId: req.user?.id,
-        includePublic: true
-      };
-      
-      if (req.query.limit) {
-        options.limit = parseInt(req.query.limit);
-      }
-      
-      if (req.query.offset) {
-        options.offset = parseInt(req.query.offset);
-      }
-      
-      boards = await boardModel.getAllBoards(options);
-      
-      // Format boards for frontend compatibility
-      boards = boards.map(board => ({
-        id: board.uuid,
-        title: board.title,
-        createdBy: null, // For compatibility with old format
-        createdAt: new Date(board.created_at).getTime(),
-        lastUpdated: new Date(board.last_updated).getTime(),
-        cellCount: board.cellCount,
-        markedCount: board.markedCount
-      }));
-    } else {
-      // Legacy mode - get boards from JSON files
-      boards = await boardService.getAllBoards();
-    }
-    
-    // Check ETag for caching
-    const eTag = boardService._generateETag(boards);
+    const options = {
+      userId: req.user?.id,
+      includePublic: true,
+      limit: parseInt(req.query.limit) || 50,
+      offset: parseInt(req.query.offset) || 0,
+      sortBy: req.query.sortBy || 'last_updated',
+      sortOrder: req.query.sortOrder || 'DESC'
+    };
+
+    const boards = await boardModel.getAllBoards(options);
+
+    // Generate ETags for caching
+    const eTag = `"${Date.now()}-${boards.length}"`;
+    res.set('ETag', eTag);
     
     if (req.headers['if-none-match'] === eTag) {
-      logger.debug('304 Not Modified', {
-        duration: getElapsedMs(startTime)
-      });
       return res.status(304).end();
     }
 
-    res.set({
-      'ETag': eTag,
-      'Cache-Control': 'private, no-cache'
-    });
-
-    logger.info('Boards fetched successfully', {
-      count: boards.length,
-      db: req.query.db === 'true',
-      duration: getElapsedMs(startTime)
+    logger.info('Boards fetched successfully', { 
+      count: boards.length, 
+      db: true,
+      duration: getElapsedMs(startTime) 
     });
     
     res.json(boards);
@@ -87,50 +58,31 @@ router.get('/boards/:boardId', async (req, res) => {
   const startTime = process.hrtime();
   
   try {
-    let board = null;
-    let boardExists = false;
+    const board = await boardModel.getBoardByUUID(boardId);
     
-    if (req.query.db === 'true') {
-      // Get board from database
-      board = await boardModel.getBoardByUUID(boardId);
-      
-      if (board) {
-        boardExists = true;
-        // Format for frontend compatibility
-        board = {
-          id: board.uuid,
-          title: board.title,
-          createdBy: null, // For compatibility with old format
-          createdAt: new Date(board.created_at).getTime(),
-          lastUpdated: new Date(board.last_updated).getTime(),
-          cells: board.cells,
-          editHistory: [] // For compatibility with old format
-        };
-      }
-    }
-    
-    // If not found in DB or not using DB mode, try legacy JSON
-    // Only if fallback isn't explicitly disabled
-    if (!boardExists && (req.query.db !== 'true' || req.query.fallback !== 'false')) {
-      board = await boardService.loadBoard(boardId);
-      if (board) {
-        boardExists = true;
-      }
-    }
-    
-    if (!board || !boardExists) {
+    if (!board) {
       logger.warn('Board not found', { boardId });
       return res.status(404).json({ error: 'Board not found' });
     }
+
+    // Format for frontend compatibility
+    const formattedBoard = {
+      id: board.uuid,
+      title: board.title,
+      createdBy: null, // For compatibility with old format
+      createdAt: new Date(board.created_at).getTime(),
+      lastUpdated: new Date(board.last_updated).getTime(),
+      cells: board.cells,
+      editHistory: [] // For compatibility with old format
+    };
     
     logger.info('Board fetched successfully', {
       boardId,
       title: board.title,
-      db: req.query.db === 'true',
       duration: getElapsedMs(startTime)
     });
     
-    res.json(board);
+    res.json(formattedBoard);
   } catch (error) {
     logger.error('Failed to fetch board', {
       error: error.message,
@@ -206,60 +158,37 @@ router.put('/boards/:boardId/cells/:row/:col', async (req, res) => {
     
     let result;
     
-    if (req.query.db === 'true') {
-      // Get board from database
-      const board = await boardModel.getBoardByUUID(boardId);
-      
-      if (!board) {
-        logger.error('Board not found for cell update', { boardId });
-        return res.status(404).json({ error: 'Board not found' });
-      }
-      
-      // Update cell in database
-      const updated = await boardModel.updateCell(board.id, rowNum, colNum, { 
-        value: value || '', 
-        marked: !!marked, 
-        type: type || 'text' 
-      }, req.user?.id);
-      
-      if (!updated) {
-        logger.error('Cell update failed in database', { boardId, row, col });
-        return res.status(500).json({ error: 'Failed to update cell' });
-      }
-      
-      const updatedCell = await boardModel.getCell(board.id, rowNum, colNum);
-      
-      result = { 
-        success: true, 
-        cell: { 
-          id: `${rowNum}-${colNum}`, 
-          value: updatedCell?.value || '',
-          marked: updatedCell?.marked === 1, 
-          type: updatedCell?.type || 'text' 
-        } 
-      };
-    } else {
-      // Legacy mode - use boardService
-      const cellId = `${rowNum}-${colNum}`;
-      result = await boardService.updateCell(
-        boardId,
-        cellId,
-        value,
-        marked,
-        type || 'text'
-      );
-      
-      if (!result.success) {
-        logger.error('Cell update failed', {
-          error: result.error,
-          boardId,
-          row,
-          col,
-          duration: getElapsedMs(startTime)
-        });
-        return res.status(404).json({ error: result.error || 'Failed to update cell' });
-      }
+    // Get board from database
+    const board = await boardModel.getBoardByUUID(boardId);
+    
+    if (!board) {
+      logger.error('Board not found for cell update', { boardId });
+      return res.status(404).json({ error: 'Board not found' });
     }
+    
+    // Update cell in database
+    const updated = await boardModel.updateCell(board.id, rowNum, colNum, { 
+      value: value || '', 
+      marked: !!marked, 
+      type: type || 'text' 
+    }, req.user?.id);
+    
+    if (!updated) {
+      logger.error('Cell update failed in database', { boardId, row, col });
+      return res.status(500).json({ error: 'Failed to update cell' });
+    }
+    
+    const updatedCell = await boardModel.getCell(board.id, rowNum, colNum);
+    
+    result = { 
+      success: true, 
+      cell: { 
+        id: `${rowNum}-${colNum}`, 
+        value: updatedCell?.value || '',
+        marked: updatedCell?.marked === 1, 
+        type: updatedCell?.type || 'text' 
+      } 
+    };
     
     logger.info('Cell updated successfully', {
       boardId,
@@ -293,65 +222,42 @@ router.put('/boards/:boardId/cells/:row/:col/mark', async (req, res) => {
     const rowNum = parseInt(row);
     const colNum = parseInt(col);
     
-    if (isNaN(rowNum) || isNaN(colNum) || rowNum < 0 || colNum < 0 || rowNum >= COLUMNS || colNum >= COLUMNS) {
+    if (isNaN(rowNum) || isNaN(colNum) || rowNum < 0 || colNum < 0) {
       logger.error('Invalid cell coordinates', { row, col });
       return res.status(400).json({ error: 'Invalid cell coordinates' });
     }
     
     let result;
     
-    if (req.query.db === 'true') {
-      // Get board from database
-      const board = await boardModel.getBoardByUUID(boardId);
-      
-      if (!board) {
-        logger.error('Board not found for cell marking', { boardId });
-        return res.status(404).json({ error: 'Board not found' });
-      }
-      
-      // Update cell in database (mark/unmark only)
-      const updated = await boardModel.updateCell(board.id, rowNum, colNum, { marked: !!marked }, req.user?.id);
-      
-      if (!updated) {
-        logger.error('Cell marking failed in database', { boardId, row, col });
-        return res.status(500).json({ error: 'Failed to mark/unmark cell' });
-      }
-      
-      // Get the updated cell to return
-      const updatedCell = await boardModel.getCell(board.id, rowNum, colNum);
-      
-      result = { 
-        success: true, 
-        marked: !!marked,
-        cell: { 
-          id: `${rowNum}-${colNum}`, 
-          value: updatedCell?.value || '', 
-          marked: updatedCell?.marked === 1, 
-          type: updatedCell?.type || 'text'
-        } 
-      };
-    } else {
-      // Legacy mode - use boardService
-      const cellId = `${rowNum}-${colNum}`;
-      result = await boardService.updateCell(
-        boardId,
-        cellId,
-        null, // Don't update value
-        marked,
-        null // Don't update type
-      );
-      
-      if (!result.success) {
-        logger.error('Cell marking failed', {
-          error: result.error,
-          boardId,
-          row,
-          col,
-          duration: getElapsedMs(startTime)
-        });
-        return res.status(404).json({ error: result.error || 'Failed to mark/unmark cell' });
-      }
+    // Get board from database
+    const board = await boardModel.getBoardByUUID(boardId);
+    
+    if (!board) {
+      logger.error('Board not found for cell marking', { boardId });
+      return res.status(404).json({ error: 'Board not found' });
     }
+    
+    // Update cell in database (mark/unmark only)
+    const updated = await boardModel.updateCell(board.id, rowNum, colNum, { marked: !!marked }, req.user?.id);
+    
+    if (!updated) {
+      logger.error('Cell marking failed in database', { boardId, row, col });
+      return res.status(500).json({ error: 'Failed to mark/unmark cell' });
+    }
+    
+    // Get the updated cell to return
+    const updatedCell = await boardModel.getCell(board.id, rowNum, colNum);
+    
+    result = { 
+      success: true, 
+      marked: !!marked,
+      cell: { 
+        id: `${rowNum}-${colNum}`, 
+        value: updatedCell?.value || '', 
+        marked: updatedCell?.marked === 1, 
+        type: updatedCell?.type || 'text'
+      } 
+    };
     
     logger.info('Cell marked/unmarked successfully', {
       boardId,
@@ -387,33 +293,21 @@ router.put('/boards/:boardId/title', async (req, res) => {
     
     let result;
     
-    if (req.query.db === 'true') {
-      // Find or create board in database
-      let board = await boardModel.getBoardByUUID(boardId);
-      
-      if (!board) {
-        // Try to load from JSON and import
-        const jsonBoard = await boardService.loadBoard(boardId);
-        
-        if (jsonBoard) {
-          board = await boardModel.importFromJson(jsonBoard, req.user?.id);
-        } else {
-          return res.status(404).json({ error: 'Board not found' });
-        }
-      }
-      
-      // Update title in database
-      board = await boardModel.updateBoard(board.id, { title });
-      
-      if (!board) {
-        return res.status(500).json({ error: 'Failed to update board title' });
-      }
-      
-      result = { success: true, title };
-    } else {
-      // Legacy mode - update JSON board
-      result = await boardService.updateBoardTitle(boardId, title);
+    // Find board in database
+    let board = await boardModel.getBoardByUUID(boardId);
+    
+    if (!board) {
+      return res.status(404).json({ error: 'Board not found' });
     }
+    
+    // Update title in database
+    board = await boardModel.updateBoard(board.id, { title });
+    
+    if (!board) {
+      return res.status(500).json({ error: 'Failed to update board title' });
+    }
+    
+    result = { success: true, title };
     
     logger.info('Board title updated successfully', {
       boardId,
@@ -441,43 +335,28 @@ router.delete('/boards/:boardId', async (req, res) => {
     let success = false;
     let dbSuccess = false;
     
-    if (req.query.db === 'true') {
-      // Find board in database
-      let board = await boardModel.getBoardByUUID(boardId);
-      
-      if (board) {
-        // Check if user owns the board
-        if (board.created_by && board.created_by !== req.user.id && !req.isAdmin) {
-          return res.status(403).json({ error: 'You do not have permission to delete this board' });
-        }
-        
-        // Delete from database
-        dbSuccess = await boardModel.deleteBoard(board.id);
-        success = dbSuccess;
-        
-        logger.info('Board deleted from database', {
-          boardId,
-          internalId: board.id,
-          success: dbSuccess
-        });
+    // Find board in database
+    let board = await boardModel.getBoardByUUID(boardId);
+    
+    if (board) {
+      // Check if user owns the board
+      if (board.created_by && board.created_by !== req.user.id && !req.isAdmin) {
+        return res.status(403).json({ error: 'You do not have permission to delete this board' });
       }
+      
+      // Delete from database
+      dbSuccess = await boardModel.deleteBoard(board.id);
+      success = dbSuccess;
+      
+      logger.info('Board deleted from database', {
+        boardId,
+        internalId: board.id,
+        success: dbSuccess
+      });
     }
     
-    // Always try to delete the JSON file as well
-    let fileSuccess = false;
-    try {
-      await boardService.deleteBoard(boardId);
-      fileSuccess = true;
-      success = true;
-    } catch (fileError) {
-      // Only warn if we couldn't delete the file and database delete also failed
-      if (!dbSuccess) {
-        logger.warn('Failed to delete board JSON file', {
-          error: fileError.message,
-          boardId
-        });
-      }
-    }
+    // Database delete successful
+    success = dbSuccess;
     
     if (!success) {
       return res.status(404).json({ error: 'Board not found' });
@@ -486,7 +365,6 @@ router.delete('/boards/:boardId', async (req, res) => {
     logger.info('Board deleted successfully', {
       boardId,
       dbSuccess,
-      fileSuccess,
       duration: getElapsedMs(startTime)
     });
     
@@ -536,37 +414,26 @@ router.get('/boards/:boardId/cells/:row/:col/history', async (req, res) => {
     
     let history = [];
     
-    if (req.query.db === 'true') {
-      // Get board from database
-      const board = await boardModel.getBoardByUUID(boardId);
-      
-      if (!board) {
-        logger.error('Board not found for cell history', { boardId });
-        return res.status(404).json({ error: 'Board not found' });
-      }
-      
-      // Get cell history from database
-      const cellHistoryModel = require('../models/cellHistoryModel');
-      history = await cellHistoryModel.getCellHistory(board.id, rowNum, colNum, { limit, offset });
-      
-      // Format history for consistency
-      history = history.map(record => ({
-        value: record.value || '',
-        marked: !!record.marked,
-        type: record.type || 'text',
-        timestamp: new Date(record.created_at).getTime(),
-        user: record.username || 'Anonymous'
-      }));
-    } else {
-      // Check if the board exists
-      const board = await boardService.getBoard(boardId);
-      if (!board) {
-        return res.status(404).json({ error: 'Board not found' });
-      }
-      
-      // Get cell history
-      history = await boardService.getCellHistory(boardId, rowNum, colNum, { limit, offset });
+    // Get board from database
+    const board = await boardModel.getBoardByUUID(boardId);
+    
+    if (!board) {
+      logger.error('Board not found for cell history', { boardId });
+      return res.status(404).json({ error: 'Board not found' });
     }
+    
+    // Get cell history from database
+    const cellHistoryModel = require('../models/cellHistoryModel');
+    history = await cellHistoryModel.getCellHistory(board.id, rowNum, colNum, { limit, offset });
+    
+    // Format history for consistency
+    history = history.map(record => ({
+      value: record.value || '',
+      marked: !!record.marked,
+      type: record.type || 'text',
+      timestamp: new Date(record.created_at).getTime(),
+      user: record.username || 'Anonymous'
+    }));
     
     return res.json({
       history,
@@ -598,27 +465,16 @@ router.get('/boards/:boardId/settings', async (req, res) => {
     
     let settings = {};
     
-    if (req.query.db === 'true') {
-      // Get board from database
-      const board = await boardModel.getBoardByUUID(boardId);
-      
-      if (!board) {
-        logger.error('Board not found for settings', { boardId });
-        return res.status(404).json({ error: 'Board not found' });
-      }
-      
-      // Get settings from database
-      settings = board.settings || {};
-    } else {
-      // Check if the board exists
-      const board = await boardService.getBoard(boardId);
-      if (!board) {
-        return res.status(404).json({ error: 'Board not found' });
-      }
-      
-      // Get board settings
-      settings = await boardService.getBoardSettings(boardId);
+    // Get board from database
+    const board = await boardModel.getBoardByUUID(boardId);
+    
+    if (!board) {
+      logger.error('Board not found for settings', { boardId });
+      return res.status(404).json({ error: 'Board not found' });
     }
+    
+    // Get settings from database
+    settings = board.settings || {};
     
     return res.json({ settings });
   } catch (error) {
@@ -640,33 +496,22 @@ router.put('/boards/:boardId/settings', async (req, res) => {
     
     let success = false;
     
-    if (req.query.db === 'true') {
-      // Get board from database
-      const board = await boardModel.getBoardByUUID(boardId);
-      
-      if (!board) {
-        logger.error('Board not found for settings update', { boardId });
-        return res.status(404).json({ error: 'Board not found' });
-      }
-      
-      // Check if the user has permission to update settings
-      if (board.created_by && board.created_by !== req.user?.id && !req.isAdmin) {
-        return res.status(403).json({ error: 'You do not have permission to update this board' });
-      }
-      
-      // Update settings in database
-      const updated = await boardModel.updateBoard(board.id, { settings });
-      success = !!updated;
-    } else {
-      // Check if the board exists
-      const board = await boardService.getBoard(boardId);
-      if (!board) {
-        return res.status(404).json({ error: 'Board not found' });
-      }
-      
-      // Update board settings
-      success = await boardService.updateBoardSettings(boardId, settings);
+    // Get board from database
+    const board = await boardModel.getBoardByUUID(boardId);
+    
+    if (!board) {
+      logger.error('Board not found for settings update', { boardId });
+      return res.status(404).json({ error: 'Board not found' });
     }
+    
+    // Check if the user has permission to update settings
+    if (board.created_by && board.created_by !== req.user?.id && !req.isAdmin) {
+      return res.status(403).json({ error: 'You do not have permission to update this board' });
+    }
+    
+    // Update settings in database
+    const updated = await boardModel.updateBoard(board.id, { settings });
+    success = !!updated;
     
     if (!success) {
       return res.status(500).json({ error: 'Failed to update board settings' });

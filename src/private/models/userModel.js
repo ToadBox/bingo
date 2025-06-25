@@ -36,6 +36,10 @@ class UserModel {
     if (userData.is_admin) {
       approvalStatus = 'approved';
     }
+    // Auto-approve anonymous users (site password login)
+    if (auth_provider === 'anonymous') {
+      approvalStatus = 'approved';
+    }
 
     try {
       const db = database.getDb();
@@ -109,7 +113,7 @@ class UserModel {
     try {
       const db = database.getDb();
       const user = await db.get(`
-        SELECT id, username, email, auth_provider, created_at, last_login, is_admin
+        SELECT id, username, email, auth_provider, created_at, last_login, is_admin, approval_status
         FROM users WHERE id = ?
       `, [id]);
       
@@ -133,7 +137,7 @@ class UserModel {
     try {
       const db = database.getDb();
       const user = await db.get(`
-        SELECT id, username, email, auth_provider, created_at, last_login, is_admin
+        SELECT id, username, email, auth_provider, created_at, last_login, is_admin, approval_status
         FROM users WHERE auth_provider = ? AND auth_id = ?
       `, [provider, authId]);
       
@@ -157,7 +161,7 @@ class UserModel {
     try {
       const db = database.getDb();
       const user = await db.get(`
-        SELECT id, username, email, auth_provider, created_at, last_login, is_admin
+        SELECT id, username, email, auth_provider, created_at, last_login, is_admin, approval_status
         FROM users WHERE email = ?
       `, [email]);
       

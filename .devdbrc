@@ -1,0 +1,6 @@
+[
+  {
+    "type": "sqlite",
+    "path": "/home/strider/git/bingo/src/data/bingo.sqlite"
+  }
+]

@@ -3,7 +3,6 @@
 # Server
 PORT=3000
 NODE_ENV=development
-SITE_URL=http://localhost:3000
 
 # Database
 DB_PATH=./data/bingo.db

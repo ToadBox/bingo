@@ -10,7 +10,8 @@
     "start:ind": "NODE_ENV=production BOARD_MODE=individual node src/private/server.js",
     "start:uni:debug": "BOARD_MODE=unified LOG_LEVEL=DEBUG node src/private/server.js",
     "start:ind:debug": "BOARD_MODE=individual LOG_LEVEL=DEBUG node src/private/server.js",
-    "migrate": "node src/private/utils/migrations.js"
+    "migrate": "node src/private/utils/migrations.js",
+    "clear-sessions": "node clear-sessions.js"
   },
   "keywords": [],
   "author": "",

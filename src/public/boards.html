@@ -9,7 +9,7 @@
       img-src 'self' data: https://earthviewinc.com https://*.earthviewinc.com https://*.cloudflareinsights.com;
       connect-src 'self' https://*.cloudflareinsights.com https://*.bingo.toadbox.net;
   ">
-  <title>ToadBox Bingo</title>
+  <title>All Boards - ToadBox Bingo</title>
   <link rel="stylesheet" href="/css/common.css">
   <link rel="stylesheet" href="/css/index.css">
   <link rel="preload" href="/css/common.css" as="style">
@@ -18,65 +18,65 @@
 </head>
 <body>
   <div class="container">
-    <!-- Hero Section -->
-    <section class="hero">
-      <h1>ToadBox Bingo</h1>
-      <p class="hero-description">Create and share custom bingo boards with real-time collaboration</p>
-      
-      <!-- Action Buttons -->
-      <div class="hero-actions">
-        <button id="createBoardBtn" class="btn btn-primary">
-          <span class="btn-icon">+</span>
-          Create New Board
-        </button>
-        <a href="/boards" class="btn btn-secondary">
-          <span class="btn-icon">📋</span>
-          Browse All Boards
-        </a>
+    <!-- Header Section -->
+    <section class="page-header">
+      <div class="header-content">
+        <div class="header-text">
+          <h1>All Boards</h1>
+          <p>Browse and discover bingo boards from the community</p>
+        </div>
+        <div class="header-actions">
+          <a href="/" class="btn btn-secondary">← Back to Home</a>
+          <button id="createBoardBtn" class="btn btn-primary" style="display: none;">
+            <span class="btn-icon">+</span>
+            Create Board
+          </button>
+        </div>
       </div>
     </section>
 
-    <!-- Recent Boards Section -->
-    <section class="recent-boards">
-      <div class="section-header">
-        <h2>Recent Boards</h2>
-        <a href="/boards" class="view-all-link">View All →</a>
+    <!-- Filters and Search -->
+    <section class="filters">
+      <div class="search-container">
+        <input type="text" id="searchInput" placeholder="Search boards..." class="search-input">
+        <button id="searchBtn" class="search-button">🔍</button>
       </div>
       
-      <div class="boards-grid" id="recentBoards">
-        <div class="loading">Loading recent boards...</div>
+      <div class="filter-controls">
+        <select id="sortBy" class="filter-select">
+          <option value="last_updated">Recently Updated</option>
+          <option value="created_at">Recently Created</option>
+          <option value="title">Alphabetical</option>
+        </select>
+        
+        <select id="sortOrder" class="filter-select">
+          <option value="DESC">Newest First</option>
+          <option value="ASC">Oldest First</option>
+        </select>
+        
+        <button id="clearFilters" class="btn btn-secondary">Clear Filters</button>
       </div>
     </section>
 
-    <!-- Features Section -->
-    <section class="features">
-      <h2>Features</h2>
-      <div class="features-grid">
-        <div class="feature-card">
-          <div class="feature-icon">🎯</div>
-          <h3>Custom Boards</h3>
-          <p>Create personalized bingo boards with your own content and themes</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">👥</div>
-          <h3>Real-time Collaboration</h3>
-          <p>Work together with others in real-time, see changes as they happen</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">💬</div>
-          <h3>Board Chat</h3>
-          <p>Communicate with your team using built-in chat and mentions</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">📱</div>
-          <h3>Mobile Friendly</h3>
-          <p>Access your boards from any device, anywhere</p>
-        </div>
+    <!-- Boards Grid -->
+    <section class="boards-section">
+      <div class="boards-grid" id="boardsGrid">
+        <div class="loading">Loading boards...</div>
+      </div>
+      
+      <!-- Load More Button -->
+      <div class="load-more-container" id="loadMoreContainer" style="display: none;">
+        <button id="loadMoreBtn" class="btn btn-secondary">Load More Boards</button>
+      </div>
+      
+      <!-- Pagination Info -->
+      <div class="pagination-info" id="paginationInfo" style="display: none;">
+        <span id="boardCount">0</span> boards found
       </div>
     </section>
   </div>
 
-  <!-- Create Board Modal -->
+  <!-- Create Board Modal (same as index.html) -->
   <div id="createBoardModal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
@@ -135,7 +135,7 @@
     </div>
   </div>
 
-  <script type="module" src="/js/index.js"></script>
+  <script type="module" src="/js/boards.js"></script>
   <script>
     // Add version to resource URLs
     (async () => {
@@ -161,4 +161,4 @@
     })();
   </script>
 </body>
-</html>
+</html> 

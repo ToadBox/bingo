@@ -1,213 +1,200 @@
+const boardModel = require('../../models/boardModel');
 const logger = require('../../utils/logger');
-const boardService = require('../../services/boardService');
 
 class BoardHandler {
-  /**
-   * Register board-related WebSocket event handlers
-   * @param {Object} socket - Socket instance
-   * @param {Object} wsServer - WebSocketServer instance
-   */
-  registerHandlers(socket, wsServer) {
-    // Join a board room
-    socket.on('board:join', async (data, callback) => {
-      try {
+    constructor(io) {
+        this.io = io;
+        this.boardModel = boardModel;
+    }
+
+    async handleGetBoard(socket, data) {
+        try {
+            const { boardId } = data;
+            
+            if (!boardId) {
+                socket.emit('error', { message: 'Board ID is required' });
+                return;
+            }
+
+            const board = await this.boardModel.getBoardByUUID(boardId);
+            
+            if (!board) {
+                socket.emit('error', { message: 'Board not found' });
+                return;
+            }
+
+            // Format for frontend compatibility
+            const formattedBoard = {
+                id: board.uuid,
+                title: board.title,
+                createdBy: null, // For compatibility with old format
+                createdAt: new Date(board.created_at).getTime(),
+                lastUpdated: new Date(board.last_updated).getTime(),
+                cells: board.cells,
+                editHistory: [] // For compatibility with old format
+            };
+
+            socket.emit('board:data', formattedBoard);
+            
+            logger.info('Board data sent to client', {
+                boardId,
+                socketId: socket.id
+            });
+        } catch (error) {
+            logger.error('Failed to get board', {
+                error: error.message,
+                boardId: data.boardId,
+                socketId: socket.id
+            });
+            socket.emit('error', { message: 'Failed to get board' });
+        }
+    }
+
+    async handleUpdateCell(socket, data) {
+        try {
+            const { boardId, cellId, value, marked, type = 'text' } = data;
+            
+            if (!boardId || cellId === undefined) {
+                socket.emit('error', { message: 'Board ID and cell ID are required' });
+                return;
+            }
+
+            // Parse cell coordinates from cellId (e.g., "A1" -> row: 0, col: 0)
+            const row = parseInt(cellId.substring(1)) - 1;
+            const col = cellId.charCodeAt(0) - 65; // A=0, B=1, etc.
+
+            const board = await this.boardModel.getBoardByUUID(boardId);
+            
+            if (!board) {
+                socket.emit('error', { message: 'Board not found' });
+                return;
+            }
+
+            const success = await this.boardModel.updateCell(
+                board.id, // Use internal board ID
+                cellId,
+                value,
+                marked,
+                type
+            );
+
+            if (success) {
+                // Broadcast the update to all clients in the board room
+                this.io.to(`board-${boardId}`).emit('cell:updated', {
+                    cellId,
+                    value,
+                    marked,
+                    type,
+                    updatedBy: socket.user?.username || 'Anonymous',
+                    timestamp: Date.now()
+                });
+
+                logger.info('Cell updated via WebSocket', {
+                    boardId,
+                    cellId,
+                    value: value?.substring(0, 50) || '',
+                    marked,
+                    type,
+                    socketId: socket.id
+                });
+            } else {
+                socket.emit('error', { message: 'Failed to update cell' });
+            }
+        } catch (error) {
+            logger.error('Failed to update cell via WebSocket', {
+                error: error.message,
+                boardId: data.boardId,
+                cellId: data.cellId,
+                socketId: socket.id
+            });
+            socket.emit('error', { message: 'Failed to update cell' });
+        }
+    }
+
+    async handleGetCellHistory(socket, data) {
+        try {
+            const { boardId, cellId, limit = 10, offset = 0 } = data;
+            
+            if (!boardId || !cellId) {
+                socket.emit('error', { message: 'Board ID and cell ID are required' });
+                return;
+            }
+
+            // Parse cell coordinates
+            const row = parseInt(cellId.substring(1)) - 1;
+            const col = cellId.charCodeAt(0) - 65;
+
+            const board = await this.boardModel.getBoardByUUID(boardId);
+            
+            if (!board) {
+                socket.emit('error', { message: 'Board not found' });
+                return;
+            }
+
+            const history = await this.boardModel.getCellHistory(board.id, row, col, {
+                limit,
+                offset
+            });
+
+            socket.emit('cell:history', {
+                cellId,
+                history
+            });
+
+            logger.info('Cell history sent to client', {
+                boardId,
+                cellId,
+                historyCount: history.length,
+                socketId: socket.id
+            });
+        } catch (error) {
+            logger.error('Failed to get cell history', {
+                error: error.message,
+                boardId: data.boardId,
+                cellId: data.cellId,
+                socketId: socket.id
+            });
+            socket.emit('error', { message: 'Failed to get cell history' });
+        }
+    }
+
+    handleJoinBoard(socket, data) {
         const { boardId } = data;
+        
         if (!boardId) {
-          return callback({ error: 'Board ID is required' });
+            socket.emit('error', { message: 'Board ID is required' });
+            return;
         }
-        
-        // Check if the board exists
-        const board = await boardService.getBoard(boardId);
-        if (!board) {
-          return callback({ error: 'Board not found' });
-        }
-        
-        // Check if the user has access to the board
-        // TODO: Implement board access control
-        
-        // Join the board room
-        const activeUsers = wsServer.joinBoardRoom(socket, boardId);
-        
-        // Send active users to the client
-        callback({
-          success: true,
-          activeUsers
-        });
-        
-      } catch (error) {
-        logger.error('Error in board:join handler', {
-          error: error.message,
-          userId: socket.user?.id,
-          boardId: data?.boardId
-        });
-        callback({ error: 'Failed to join board' });
-      }
-    });
 
-    // Leave a board room
-    socket.on('board:leave', async (data, callback) => {
-      try {
+        socket.join(`board-${boardId}`);
+        
+        logger.info('Client joined board room', {
+            boardId,
+            socketId: socket.id,
+            userId: socket.user?.id
+        });
+
+        socket.emit('board:joined', { boardId });
+    }
+
+    handleLeaveBoard(socket, data) {
         const { boardId } = data;
-        if (!boardId) {
-          return callback({ error: 'Board ID is required' });
-        }
-        
-        // Leave the board room
-        wsServer.leaveBoardRoom(socket, boardId);
-        
-        callback({ success: true });
-      } catch (error) {
-        logger.error('Error in board:leave handler', {
-          error: error.message,
-          userId: socket.user?.id,
-          boardId: data?.boardId
-        });
-        callback({ error: 'Failed to leave board' });
-      }
-    });
-
-    // Cell update event
-    socket.on('cell:update', async (data, callback) => {
-      try {
-        const { boardId, row, col, value, type, marked } = data;
-        
-        if (!boardId || row === undefined || col === undefined) {
-          return callback({ error: 'Invalid cell update data' });
-        }
-        
-        // Check if the board exists
-        const board = await boardService.getBoard(boardId);
-        if (!board) {
-          return callback({ error: 'Board not found' });
-        }
-        
-        // Update the cell
-        const userId = socket.user.id;
-        const success = await boardService.updateCell(
-          boardId,
-          row,
-          col,
-          { value, type, marked },
-          userId
-        );
-        
-        if (!success) {
-          return callback({ error: 'Failed to update cell' });
-        }
-        
-        // Get username for the update
-        const username = socket.user.username;
-        
-        // Broadcast the update to all clients in the room except the sender
-        socket.to(`board:${boardId}`).emit('cell:updated', {
-          boardId,
-          row,
-          col,
-          value,
-          type,
-          marked,
-          userId,
-          username,
-          timestamp: new Date().toISOString()
-        });
-        
-        callback({ success: true });
-      } catch (error) {
-        logger.error('Error in cell:update handler', {
-          error: error.message,
-          userId: socket.user?.id,
-          data
-        });
-        callback({ error: 'Failed to update cell' });
-      }
-    });
-
-    // Get cell history
-    socket.on('cell:history', async (data, callback) => {
-      try {
-        const { boardId, row, col, limit, offset } = data;
-        
-        if (!boardId || row === undefined || col === undefined) {
-          return callback({ error: 'Invalid cell history request' });
-        }
-        
-        // Check if the board exists
-        const board = await boardService.getBoard(boardId);
-        if (!board) {
-          return callback({ error: 'Board not found' });
-        }
-        
-        // Get cell history
-        const history = await boardService.getCellHistory(boardId, row, col, {
-          limit: limit || 20,
-          offset: offset || 0
-        });
-        
-        callback({
-          success: true,
-          history
-        });
-      } catch (error) {
-        logger.error('Error in cell:history handler', {
-          error: error.message,
-          userId: socket.user?.id,
-          data
-        });
-        callback({ error: 'Failed to get cell history' });
-      }
-    });
-
-    // User typing indicator
-    socket.on('user:typing', (data) => {
-      try {
-        const { boardId, isTyping, cellPosition } = data;
         
         if (!boardId) {
-          return;
+            socket.emit('error', { message: 'Board ID is required' });
+            return;
         }
+
+        socket.leave(`board-${boardId}`);
         
-        // Broadcast typing indicator to all clients in the room except the sender
-        socket.to(`board:${boardId}`).emit('user:typing', {
-          userId: socket.user.id,
-          username: socket.user.username,
-          isTyping,
-          cellPosition,
-          timestamp: new Date().toISOString()
+        logger.info('Client left board room', {
+            boardId,
+            socketId: socket.id,
+            userId: socket.user?.id
         });
-      } catch (error) {
-        logger.error('Error in user:typing handler', {
-          error: error.message,
-          userId: socket.user?.id,
-          data
-        });
-      }
-    });
-    
-    // Board cursor position update
-    socket.on('cursor:move', (data) => {
-      try {
-        const { boardId, position } = data;
-        
-        if (!boardId || !position) {
-          return;
-        }
-        
-        // Broadcast cursor position to all clients in the room except the sender
-        socket.to(`board:${boardId}`).emit('cursor:moved', {
-          userId: socket.user.id,
-          username: socket.user.username,
-          position,
-          timestamp: new Date().toISOString()
-        });
-      } catch (error) {
-        logger.error('Error in cursor:move handler', {
-          error: error.message,
-          userId: socket.user?.id,
-          data
-        });
-      }
-    });
-  }
+
+        socket.emit('board:left', { boardId });
+    }
 }
 
-module.exports = new BoardHandler(); 
+module.exports = BoardHandler; 

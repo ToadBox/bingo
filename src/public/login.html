@@ -4,27 +4,104 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="
-      default-src 'self' https://earthviewinc.com;
-      script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com https://*.cloudflareinsights.com;
-      img-src 'self' data: https://earthviewinc.com https://*.earthviewinc.com https://*.cloudflareinsights.com;
-      connect-src 'self' https://*.cloudflareinsights.com https://*.bingo.toadbox.net;
+      default-src 'self' https://earthviewinc.com https://accounts.google.com https://discord.com;
+      script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com https://*.cloudflareinsights.com https://accounts.google.com;
+      img-src 'self' data: https://earthviewinc.com https://*.earthviewinc.com https://*.cloudflareinsights.com https://cdn.discordapp.com;
+      connect-src 'self' https://*.cloudflareinsights.com https://*.bingo.toadbox.net https://accounts.google.com https://discord.com;
+      frame-src https://accounts.google.com;
   ">
   <title>ToadBox Bingo - Login</title>
   <link rel="stylesheet" href="/css/common.css">
   <link rel="stylesheet" href="/css/login.css">
   <link rel="icon" type="image/x-icon" href="https://earthviewinc.com/DSN/wwwearthviewinccom/Commerce/ProductImages/mn1_004498.jpg">
   <script type="module" src="/js/theme.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
   <div class="login-container">
     <h1>ToadBox Bingo</h1>
-    <div id="login-form" class="login-form">
-      <div class="form-group">
-        <label for="password">Enter Password</label>
-        <input type="password" id="password" name="password" required autocomplete="current-password">
+    <p class="login-description">Choose your login method to get started</p>
+    
+    <!-- Site Password Login -->
+    <div class="login-section">
+      <h2>Quick Access</h2>
+      <div id="site-password-form" class="login-form">
+        <div class="form-group">
+          <label for="site-password">Site Password</label>
+          <input type="password" id="site-password" name="site-password" required autocomplete="current-password" placeholder="Enter site password for anonymous access">
+        </div>
+        <button type="button" id="site-login-button" class="btn btn-primary">Enter Anonymously</button>
+        <div id="site-error-message" class="error-message"></div>
       </div>
-      <button type="button" id="login-button">Enter</button>
-      <div id="error-message" class="error-message"></div>
+    </div>
+
+    <div class="login-divider">
+      <span>OR</span>
+    </div>
+
+    <!-- OAuth Login Options -->
+    <div class="login-section">
+      <h2>Sign In With Account</h2>
+      <div class="oauth-buttons">
+        <!-- Google Login -->
+        <div id="google-signin-button" class="oauth-button google-button">
+          <span class="oauth-icon">🔍</span>
+          <span>Continue with Google</span>
+        </div>
+        
+        <!-- Discord Login -->
+        <a href="/api/auth/discord" id="discord-login-button" class="oauth-button discord-button">
+          <span class="oauth-icon">💬</span>
+          <span>Continue with Discord</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="login-divider">
+      <span>OR</span>
+    </div>
+
+    <!-- Local Account Login/Register -->
+    <div class="login-section">
+      <h2>Local Account</h2>
+      
+      <!-- Login Form -->
+      <div id="local-login-form" class="login-form">
+        <div class="form-group">
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" required autocomplete="email" placeholder="Enter your email">
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="Enter your password">
+        </div>
+        <button type="button" id="local-login-button" class="btn btn-primary">Sign In</button>
+        <button type="button" id="show-register-button" class="btn btn-secondary">Create Account</button>
+        <div id="local-error-message" class="error-message"></div>
+      </div>
+
+      <!-- Registration Form (Hidden by default) -->
+      <div id="local-register-form" class="login-form" style="display: none;">
+        <div class="form-group">
+          <label for="reg-username">Username</label>
+          <input type="text" id="reg-username" name="username" required placeholder="Choose a username">
+        </div>
+        <div class="form-group">
+          <label for="reg-email">Email</label>
+          <input type="email" id="reg-email" name="email" required autocomplete="email" placeholder="Enter your email">
+        </div>
+        <div class="form-group">
+          <label for="reg-password">Password</label>
+          <input type="password" id="reg-password" name="password" required autocomplete="new-password" placeholder="Create a password">
+        </div>
+        <div class="form-group">
+          <label for="reg-password-confirm">Confirm Password</label>
+          <input type="password" id="reg-password-confirm" name="password-confirm" required autocomplete="new-password" placeholder="Confirm your password">
+        </div>
+        <button type="button" id="register-button" class="btn btn-primary">Create Account</button>
+        <button type="button" id="show-login-button" class="btn btn-secondary">Back to Login</button>
+        <div id="register-error-message" class="error-message"></div>
+      </div>
     </div>
   </div>
 
@@ -36,45 +113,89 @@
       console.log('DOM loaded, initializing login page');
       initTheme();
       
+      // Get form elements
+      const sitePasswordInput = document.getElementById('site-password');
+      const siteLoginButton = document.getElementById('site-login-button');
+      const siteErrorMessage = document.getElementById('site-error-message');
+      
+      const emailInput = document.getElementById('email');
       const passwordInput = document.getElementById('password');
-      const loginButton = document.getElementById('login-button');
-      const errorMessage = document.getElementById('error-message');
+      const localLoginButton = document.getElementById('local-login-button');
+      const localErrorMessage = document.getElementById('local-error-message');
+      
+      const showRegisterButton = document.getElementById('show-register-button');
+      const showLoginButton = document.getElementById('show-login-button');
+      const localLoginForm = document.getElementById('local-login-form');
+      const localRegisterForm = document.getElementById('local-register-form');
+      
+      const regUsernameInput = document.getElementById('reg-username');
+      const regEmailInput = document.getElementById('reg-email');
+      const regPasswordInput = document.getElementById('reg-password');
+      const regPasswordConfirmInput = document.getElementById('reg-password-confirm');
+      const registerButton = document.getElementById('register-button');
+      const registerErrorMessage = document.getElementById('register-error-message');
 
-      // Handle Enter key in password field
-      passwordInput.addEventListener('keydown', (e) => {
+      // Handle Enter key in password fields
+      sitePasswordInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-          console.log('Enter key pressed');
-          e.preventDefault(); // Prevent form submission
-          attemptLogin();
+          e.preventDefault();
+          attemptSiteLogin();
         }
       });
 
-      // Handle button click
-      loginButton.addEventListener('click', (e) => {
-        console.log('Login button clicked');
-        e.preventDefault(); // Prevent any default action
-        attemptLogin();
+      passwordInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          attemptLocalLogin();
+        }
       });
 
-      // Login function
-      async function attemptLogin() {
-        const password = passwordInput.value;
+      regPasswordConfirmInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          attemptRegister();
+        }
+      });
+
+      // Handle button clicks
+      siteLoginButton.addEventListener('click', attemptSiteLogin);
+      localLoginButton.addEventListener('click', attemptLocalLogin);
+      registerButton.addEventListener('click', attemptRegister);
+
+      // Form switching
+      showRegisterButton.addEventListener('click', () => {
+        localLoginForm.style.display = 'none';
+        localRegisterForm.style.display = 'block';
+        clearMessages();
+      });
+
+      showLoginButton.addEventListener('click', () => {
+        localRegisterForm.style.display = 'none';
+        localLoginForm.style.display = 'block';
+        clearMessages();
+      });
+
+      // Clear error messages
+      function clearMessages() {
+        siteErrorMessage.textContent = '';
+        localErrorMessage.textContent = '';
+        registerErrorMessage.textContent = '';
+      }
+
+      // Site password login
+      async function attemptSiteLogin() {
+        const password = sitePasswordInput.value;
         
         if (!password) {
-          console.log('No password entered');
-          errorMessage.textContent = 'Password is required';
+          siteErrorMessage.textContent = 'Site password is required';
           return;
         }
         
-        console.log('Attempting login with password');
-        
-        // Show loading state
-        loginButton.disabled = true;
-        loginButton.textContent = 'Logging in...';
-        errorMessage.textContent = '';
+        siteLoginButton.disabled = true;
+        siteLoginButton.textContent = 'Logging in...';
+        siteErrorMessage.textContent = '';
         
         try {
-          console.log('Sending login request');
           const response = await fetch('/api/auth/login', {
             method: 'POST',
             headers: {
@@ -83,66 +204,201 @@
             body: JSON.stringify({ password })
           });
           
-          console.log('Login response received:', response.status);
-          
           if (response.ok) {
-            console.log('Login successful, redirecting to homepage');
-            
-            // Clear any existing cookie before redirect to ensure clean state
-            document.cookie.split(';').forEach(cookie => {
-              const trimmedCookie = cookie.trim();
-              if (trimmedCookie.startsWith('auth_token=')) {
-                console.log('Found existing auth_token cookie');
-              }
-            });
-            
-            // Redirect to the main page on successful login
-            console.log('Redirecting to homepage...');
             window.location.href = '/';
-            
-            // Add a fallback redirect after a short delay
-            setTimeout(() => {
-              console.log('Fallback redirect triggered');
-              window.location.replace('/');
-            }, 1000);
           } else {
             const data = await response.json();
-            console.error('Login failed:', data);
-            errorMessage.textContent = data.error || 'Invalid password';
-            passwordInput.value = ''; // Clear password field
+            siteErrorMessage.textContent = data.error || 'Invalid site password';
+            sitePasswordInput.value = '';
+            sitePasswordInput.focus();
+          }
+        } catch (error) {
+          console.error('Site login error:', error);
+          siteErrorMessage.textContent = 'Error connecting to server';
+        } finally {
+          siteLoginButton.disabled = false;
+          siteLoginButton.textContent = 'Enter Anonymously';
+        }
+      }
+
+      // Local account login
+      async function attemptLocalLogin() {
+        const email = emailInput.value;
+        const password = passwordInput.value;
+        
+        if (!email || !password) {
+          localErrorMessage.textContent = 'Email and password are required';
+          return;
+        }
+        
+        localLoginButton.disabled = true;
+        localLoginButton.textContent = 'Signing In...';
+        localErrorMessage.textContent = '';
+        
+        try {
+          const response = await fetch('/api/auth/local-login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ email, password })
+          });
+          
+          if (response.ok) {
+            window.location.href = '/';
+          } else {
+            const data = await response.json();
+            localErrorMessage.textContent = data.error || 'Invalid email or password';
+            passwordInput.value = '';
             passwordInput.focus();
           }
         } catch (error) {
-          console.error('Login error:', error);
-          errorMessage.textContent = 'Error connecting to server';
+          console.error('Local login error:', error);
+          localErrorMessage.textContent = 'Error connecting to server';
         } finally {
-          // Reset button state
-          loginButton.disabled = false;
-          loginButton.textContent = 'Enter';
+          localLoginButton.disabled = false;
+          localLoginButton.textContent = 'Sign In';
         }
       }
-      
-      // Check if we're already logged in
-      fetch('/api/health')
-        .then(response => {
-          console.log('Health check response:', response.status);
-          if (response.status === 200) {
-            // Try accessing a protected resource to verify authentication
-            return fetch('/api/board/server-01');
+
+      // Account registration
+      async function attemptRegister() {
+        const username = regUsernameInput.value;
+        const email = regEmailInput.value;
+        const password = regPasswordInput.value;
+        const confirmPassword = regPasswordConfirmInput.value;
+        
+        if (!username || !email || !password || !confirmPassword) {
+          registerErrorMessage.textContent = 'All fields are required';
+          return;
+        }
+        
+        if (password !== confirmPassword) {
+          registerErrorMessage.textContent = 'Passwords do not match';
+          return;
+        }
+        
+        if (password.length < 6) {
+          registerErrorMessage.textContent = 'Password must be at least 6 characters';
+          return;
+        }
+        
+        registerButton.disabled = true;
+        registerButton.textContent = 'Creating Account...';
+        registerErrorMessage.textContent = '';
+        
+        try {
+          const response = await fetch('/api/auth/register', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ username, email, password })
+          });
+          
+          if (response.ok) {
+            window.location.href = '/';
+          } else {
+            const data = await response.json();
+            registerErrorMessage.textContent = data.error || 'Registration failed';
           }
-          return Promise.reject('Health check failed');
-        })
+        } catch (error) {
+          console.error('Registration error:', error);
+          registerErrorMessage.textContent = 'Error connecting to server';
+        } finally {
+          registerButton.disabled = false;
+          registerButton.textContent = 'Create Account';
+        }
+      }
+
+      // Load auth configuration and initialize OAuth
+      async function loadAuthConfig() {
+        try {
+          const response = await fetch('/api/auth/config');
+          if (response.ok) {
+            const config = await response.json();
+            
+            // Initialize Google Sign-In if available
+            if (config.googleClientId && typeof google !== 'undefined') {
+              google.accounts.id.initialize({
+                client_id: config.googleClientId,
+                callback: handleGoogleSignIn
+              });
+              
+              google.accounts.id.renderButton(
+                document.getElementById('google-signin-button'),
+                { 
+                  theme: 'outline', 
+                  size: 'large',
+                  text: 'continue_with',
+                  shape: 'rectangular',
+                  width: '100%'
+                }
+              );
+            } else {
+              // Hide Google button if not configured
+              const googleButton = document.getElementById('google-signin-button');
+              if (googleButton) {
+                googleButton.style.display = 'none';
+              }
+            }
+            
+            // Hide Discord button if not enabled
+            if (!config.discordEnabled) {
+              const discordButton = document.getElementById('discord-login-button');
+              if (discordButton) {
+                discordButton.style.display = 'none';
+              }
+            }
+            
+            // Show offline mode message if applicable
+            if (config.offlineMode) {
+              console.log('Running in offline mode - some OAuth features may be disabled');
+            }
+          }
+        } catch (error) {
+          console.error('Failed to load auth configuration:', error);
+        }
+      }
+
+      // Handle Google Sign-In
+      async function handleGoogleSignIn(response) {
+        try {
+          const result = await fetch('/api/auth/google', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ idToken: response.credential })
+          });
+          
+          if (result.ok) {
+            window.location.href = '/';
+          } else {
+            const data = await result.json();
+            siteErrorMessage.textContent = data.error || 'Google sign-in failed';
+          }
+        } catch (error) {
+          console.error('Google sign-in error:', error);
+          siteErrorMessage.textContent = 'Google sign-in error';
+        }
+      }
+
+      // Check if already authenticated
+      fetch('/api/auth/status')
         .then(response => {
-          console.log('Authentication check response:', response.status);
-          if (response.status === 200) {
-            console.log('Already authenticated, redirecting to homepage');
+          if (response.ok) {
+            // Already authenticated, redirect to home
             window.location.href = '/';
           }
         })
         .catch(error => {
-          console.log('Auth check error (expected if not logged in):', error);
           // Not authenticated, stay on login page
+          console.log('Not authenticated, staying on login page');
         });
+
+      // Load auth configuration and initialize OAuth
+      setTimeout(loadAuthConfig, 1000);
     });
   </script>
 </body>

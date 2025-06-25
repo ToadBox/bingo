@@ -19,11 +19,15 @@ const isAuthenticated = async (req, res, next) => {
   
   // Skip authentication for API endpoints that should always be accessible
   if (req.path === '/api/auth/login' || 
+      req.path === '/api/auth/local-login' ||
       req.path === '/api/auth/google' ||
       req.path === '/api/auth/discord' ||
       req.path === '/api/auth/discord/callback' ||
       req.path === '/api/auth/register' ||
       req.path === '/api/auth/admin-login' || 
+      req.path === '/api/auth/status' ||
+      req.path === '/api/auth/logout' ||
+      req.path === '/api/auth/config' ||
       req.path === '/api/health' ||
       req.path === '/api/version') {
     logger.debug('Skipping auth for exempt API path', { path: req.path });

@@ -19,6 +19,105 @@ const loginLimiter = rateLimit({
   }
 });
 
+// Check if Discord should be enabled
+const isDiscordEnabled = () => {
+  try {
+    // Check if we're in offline mode
+    if (process.env.OFFLINE_MODE === 'true') {
+      logger.info('Discord is disabled in offline mode');
+      return false;
+    }
+
+    // Check if Discord bot token is provided
+    if (!process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN.trim() === '') {
+      logger.info('Discord is disabled because DISCORD_BOT_TOKEN is not provided');
+      return false;
+    }
+
+    // Check if Discord client credentials are provided
+    if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) {
+      logger.info('Discord is disabled because DISCORD_CLIENT_ID or DISCORD_CLIENT_SECRET is not provided');
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    logger.error('Error checking Discord availability', { error: error.message });
+    return false;
+  }
+};
+
+// Configure Discord OAuth routes if Discord is enabled
+if (isDiscordEnabled()) {
+  logger.info('Configuring Discord OAuth routes');
+
+  // Discord OAuth login endpoints
+  router.get('/discord', (req, res) => {
+    const clientId = process.env.DISCORD_CLIENT_ID;
+    const redirectUri = `${process.env.APP_URL}/api/auth/discord/callback`;
+    const scope = 'identify email';
+    
+    if (!clientId) {
+      logger.error('Discord OAuth attempted but DISCORD_CLIENT_ID not configured');
+      return res.redirect('/login.html?error=discord_not_configured');
+    }
+    
+    const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}`;
+    
+    res.redirect(discordAuthUrl);
+  });
+
+  router.get('/discord/callback', async (req, res) => {
+    const { code } = req.query;
+    
+    if (!code) {
+      return res.redirect('/login.html?error=discord_auth_failed');
+    }
+    
+    try {
+      // Get request info for auth
+      const requestInfo = {
+        ip: req.ip,
+        userAgent: req.headers['user-agent']
+      };
+      
+      const redirectUri = `${process.env.APP_URL}/api/auth/discord/callback`;
+      
+      // Authenticate with Discord
+      const authResult = await authService.authenticateDiscord(code, redirectUri, requestInfo);
+      
+      if (!authResult) {
+        return res.redirect('/login.html?error=discord_auth_failed');
+      }
+      
+      // Set the token as a cookie
+      res.cookie('auth_token', authResult.session.token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        sameSite: 'strict',
+        path: '/'
+      });
+      
+      logger.info('Successful Discord login', { 
+        userId: authResult.user.id,
+        username: authResult.user.username,
+        ip: req.ip 
+      });
+      
+      // Redirect to home
+      res.redirect('/');
+    } catch (error) {
+      logger.error('Discord authentication error', { error: error.message });
+      res.redirect('/login.html?error=discord_auth_failed');
+    }
+  });
+
+  logger.info('Discord OAuth routes configured');
+} else {
+  logger.info('Discord OAuth routes disabled');
+}
+
 // Site password login route
 router.post('/login', loginLimiter, async (req, res) => {
   const { password } = req.body;
@@ -288,63 +387,6 @@ router.post('/google', async (req, res) => {
   }
 });
 
-// Discord OAuth login endpoints
-router.get('/discord', (req, res) => {
-  const clientId = process.env.DISCORD_CLIENT_ID;
-  const redirectUri = `${process.env.APP_URL}/api/auth/discord/callback`;
-  const scope = 'identify email';
-  
-  const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}`;
-  
-  res.redirect(discordAuthUrl);
-});
-
-router.get('/discord/callback', async (req, res) => {
-  const { code } = req.query;
-  
-  if (!code) {
-    return res.redirect('/login.html?error=discord_auth_failed');
-  }
-  
-  try {
-    // Get request info for auth
-    const requestInfo = {
-      ip: req.ip,
-      userAgent: req.headers['user-agent']
-    };
-    
-    const redirectUri = `${process.env.APP_URL}/api/auth/discord/callback`;
-    
-    // Authenticate with Discord
-    const authResult = await authService.authenticateDiscord(code, redirectUri, requestInfo);
-    
-    if (!authResult) {
-      return res.redirect('/login.html?error=discord_auth_failed');
-    }
-    
-    // Set the token as a cookie
-    res.cookie('auth_token', authResult.session.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: 'strict',
-      path: '/'
-    });
-    
-    logger.info('Successful Discord login', { 
-      userId: authResult.user.id,
-      username: authResult.user.username,
-      ip: req.ip 
-    });
-    
-    // Redirect to home
-    res.redirect('/');
-  } catch (error) {
-    logger.error('Discord authentication error', { error: error.message });
-    res.redirect('/login.html?error=discord_auth_failed');
-  }
-});
-
 // User info endpoint
 router.get('/user', async (req, res) => {
   try {
@@ -362,6 +404,86 @@ router.get('/user', async (req, res) => {
   } catch (error) {
     logger.error('User info error', { error: error.message });
     res.status(500).json({ error: 'An error occurred getting user info' });
+  }
+});
+
+// Auth status endpoint - check if user is authenticated
+router.get('/status', async (req, res) => {
+  try {
+    const token = req.cookies?.auth_token;
+    const adminToken = req.cookies?.admin_token;
+    
+    // Check if we have any valid token
+    if (!token && !adminToken) {
+      return res.status(401).json({ 
+        authenticated: false, 
+        error: 'No authentication token found' 
+      });
+    }
+    
+    // Verify the token using auth service
+    const authService = require('../services/authService');
+    let user = null;
+    let isAdmin = false;
+    
+    // Try user token first
+    if (token) {
+      user = await authService.verifySession(token);
+    }
+    
+    // Try admin token if user token failed
+    if (!user && adminToken) {
+      user = await authService.verifySession(adminToken);
+      if (user && user.is_admin) {
+        isAdmin = true;
+      }
+    }
+    
+    if (!user) {
+      // Clear invalid cookies
+      if (token) {
+        res.clearCookie('auth_token', {
+          path: '/',
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'strict'
+        });
+      }
+      if (adminToken) {
+        res.clearCookie('admin_token', {
+          path: '/',
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'strict'
+        });
+      }
+      
+      return res.status(401).json({ 
+        authenticated: false, 
+        error: 'Invalid authentication token' 
+      });
+    }
+    
+    // Check user approval status
+    const userModel = require('../models/userModel');
+    const approvalStatus = await userModel.getUserApprovalStatus(user.id);
+    
+    res.json({
+      authenticated: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        isAdmin: isAdmin || user.is_admin === 1,
+        approvalStatus: approvalStatus
+      }
+    });
+  } catch (error) {
+    logger.error('Auth status error', { error: error.message });
+    res.status(500).json({ 
+      authenticated: false, 
+      error: 'An error occurred checking authentication status' 
+    });
   }
 });
 
@@ -447,4 +569,19 @@ router.get('/logout', async (req, res) => {
   }
 });
 
-module.exports = router; 
+// Export the router
+module.exports = router;
+
+// Configuration endpoint for frontend
+router.get('/config', (req, res) => {
+  try {
+    res.json({
+      googleClientId: process.env.GOOGLE_CLIENT_ID || null,
+      discordEnabled: isDiscordEnabled(),
+      offlineMode: process.env.OFFLINE_MODE === 'true'
+    });
+  } catch (error) {
+    logger.error('Auth config error', { error: error.message });
+    res.status(500).json({ error: 'Failed to get auth configuration' });
+  }
+}); 

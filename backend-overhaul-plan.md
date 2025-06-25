@@ -8,16 +8,37 @@ The bingo site has been updated to support:
 4. ✅ Cell edit history with notifications
 5. ✅ Board chat system with @ mentions and slash commands
 6. ✅ Configuration system using both config.yml and .env
+7. 🔄 **IN PROGRESS** - Full SQLite transition and cleaner routing
+
+## Current Sprint: Full SQLite Transition & Clean Routing
+### Goals:
+- ✅ Remove JSON file dependencies, use SQLite as primary storage
+- ✅ Implement cleaner URL structure: `/boards` for listing, `/<username>/<boardId>` for individual boards
+- ✅ Add "Create Board" button to home page
+- ✅ Improve UI/UX for board management
+- ✅ Set server-created boards to use 'server' as username (configurable)
+
+### New URL Structure:
+- `/boards` - List all available boards (replaces current home page board listing)
+- `/server/<boardId>` - Server-created boards (e.g., `/server/bingo-main`)
+- `/<username>/<boardId>` - User-created boards (e.g., `/alice/my-board`)
+- `/` - Landing page with create board button and recent boards
+
+### Database Changes:
+- Boards now primarily stored in SQLite
+- JSON files used only as fallback/import source
+- Board URLs generated from username + board slug
+- Server boards use configurable server username (default: 'server')
 
 ## New Features to Implement
-1. 🔄 WebSockets for real-time updates
-2. 🔄 Configurable board sizes (3x3 to 9x9)
+1. ✅ (partial)WebSockets for real-time updates
+2. ✅ (partial)Configurable board sizes (3x3 to 9x9)
 3. 🔄 Enhanced image management
 4. 🔄 Advanced user profiles
 5. 🔄 Advanced board search
 6. 🔄 Board access controls
 7. 🔄 PWA (Progressive Web App) support
-8. 🔄 API rate limiting and security
+8. ✅ (Partial)API rate limiting and security
 9. 🔄 Board versioning with reversion capability
 
 ## Completed Database Schema
@@ -28,7 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL,
   email TEXT UNIQUE,
-  auth_provider TEXT, -- 'local', 'google', 'discord', etc.
+  auth_provider TEXT, -- 'local', 'google', 'discord', 'anonymous', etc.
   auth_id TEXT,       -- ID from the provider
   password_hash TEXT, -- For local accounts only
   password_salt TEXT, -- For local accounts only
@@ -47,13 +68,15 @@ CREATE TABLE IF NOT EXISTS boards (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   uuid TEXT UNIQUE NOT NULL,
   title TEXT NOT NULL,
+  slug TEXT NOT NULL,           -- URL-friendly board identifier
   created_by INTEGER,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   is_public BOOLEAN DEFAULT 0,
   description TEXT,
-  settings TEXT,
-  FOREIGN KEY (created_by) REFERENCES users(id)
+  settings TEXT,                -- JSON: size, freeSpace, etc.
+  FOREIGN KEY (created_by) REFERENCES users(id),
+  UNIQUE(created_by, slug)      -- Users can't have duplicate slugs
 );
 ```
 
@@ -162,6 +185,106 @@ CREATE TABLE IF NOT EXISTS notifications (
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
 ```
+
+## Implementation Progress
+
+### ✅ Completed Features
+- Full authentication system with anonymous, Google, Discord support
+- SQLite database with all core tables
+- WebSocket support for real-time updates
+- Board chat with mentions and commands
+- Cell history tracking
+- Admin panel with user management
+- Configuration system (config.yml + .env)
+- Startup configuration checks
+- Discord bot integration with conditional loading
+
+### 🔄 Current Implementation: Routing & UI Overhaul
+
+#### Backend Changes:
+1. **New Route Structure**:
+   - `GET /boards` - List all boards with pagination and filters
+   - `GET /:username/:boardSlug` - Get specific board by username and slug
+   - `POST /boards` - Create new board (generates slug from title)
+   - `PUT /:username/:boardSlug` - Update board (owner only)
+   - `DELETE /:username/:boardSlug` - Delete board (owner only)
+
+2. **Board Model Updates**:
+   - Add `slug` field for URL-friendly identifiers
+   - Add methods for slug generation and validation
+   - Update board creation to auto-generate slugs
+   - Add username-based board retrieval
+
+3. **Server Username Configuration**:
+   - Add `serverUsername` to config.yml (default: 'server')
+   - Use for all system-created boards
+   - Migrate existing server boards to use server username
+
+#### Frontend Changes:
+1. **Home Page Redesign**:
+   - Add prominent "Create Board" button
+   - Show recent boards grid
+   - Add search/filter capabilities
+   - Navigation to `/boards` for full listing
+
+2. **Board Listing Page** (`/boards`):
+   - Paginated board grid
+   - Search and filter options
+   - Sort by date, popularity, completion
+   - User-specific filtering
+
+3. **URL Updates**:
+   - Update all board links to use new URL structure
+   - Add breadcrumb navigation
+   - Handle legacy URL redirects
+
+### New Files Created:
+1. `src/private/utils/startupChecks.js` - Configuration validation
+2. `src/private/utils/slugGenerator.js` - URL slug generation
+3. `src/private/routes/boards.js` - New board routes
+4. `src/public/boards.html` - Board listing page
+5. `src/public/js/boards.js` - Board listing functionality
+
+### Files Modified:
+1. `src/private/server.js` - Updated routing and Discord handling
+2. `src/private/models/boardModel.js` - Added slug support
+3. `src/private/models/userModel.js` - Fixed anonymous user approval
+4. `src/private/routes/auth.js` - Conditional Discord routes
+5. `src/public/index.html` - Updated home page UI
+6. `src/public/js/index.js` - Updated for new routing
+7. `config.yml` - Added server username configuration
+
+## Next Implementation Phases
+
+### Phase 1: Enhanced Image Management
+- Create image upload service with Sharp.js
+- Implement automatic thumbnail generation
+- Add image validation and compression
+- Create image gallery for boards
+
+### Phase 2: Advanced User Profiles
+- Implement user profile pages
+- Add avatar upload and management
+- Create user statistics and achievements
+- Add user preference settings
+
+### Phase 3: Board Access Controls & Collaboration
+- Implement board permission levels
+- Create invite system with shareable links
+- Add password protection for boards
+- Implement real-time collaboration features
+
+### Phase 4: PWA & Offline Support
+- Configure service workers
+- Implement offline data caching
+- Add push notifications
+- Create background sync for offline actions
+
+### Phase 5: Search & Discovery
+- Implement full-text search for board content
+- Create board categorization and tagging
+- Add advanced filtering options
+- Create board recommendation system
 
 ## New Tables Needed
 

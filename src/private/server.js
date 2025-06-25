@@ -1,5 +1,3 @@
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const http = require('http');
 const { Client, GatewayIntentBits } = require('discord.js');
@@ -11,16 +9,17 @@ const logger = require('./utils/logger');
 const DiscordCommands = require('./routes/discord');
 const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
+const boardsRoutes = require('./routes/boards');
 const { isAuthenticated } = require('./middleware/auth');
 const constants = require('./config/constants');
-const boardService = require('./services/boardService');
 const database = require('./models/database');
 const userRoutes = require('./routes/users');
 const notificationRoutes = require('./routes/notifications');
-const adminUsersRoutes = require('./routes/admin/users');
-const configLoader = require('./utils/configLoader');
+const adminRoutes = require('./routes/admin/users');
 const chatRoutes = require('./routes/chat');
 const websocketServer = require('./websocket');
+const configLoader = require('./utils/configLoader');
+const startupChecks = require('./utils/startupChecks');
 
 class Server {
     constructor() {
@@ -28,9 +27,13 @@ class Server {
         this.server = http.createServer(this.app);
         this.isShuttingDown = false;
         this.connections = new Set();
+        this.discordEnabled = false;
         
-        // Only initialize Discord client if not in offline mode
-        if (!constants.OFFLINE_MODE) {
+        // Check if Discord should be enabled
+        this.checkDiscordAvailability();
+        
+        // Only initialize Discord client if Discord is enabled
+        if (this.discordEnabled) {
             this.client = new Client({ 
                 intents: [
                     GatewayIntentBits.Guilds,
@@ -42,153 +45,92 @@ class Server {
         
         this.setupMiddleware();
         this.setupRoutes();
-        
-        // Only setup Discord bot if not in offline mode
-        if (!constants.OFFLINE_MODE) {
-            this.setupDiscordBot();
-        }
+        this.setupErrorHandling();
+        this.setupGracefulShutdown();
+    }
 
-        // Initialize WebSocket server
-        this.setupWebSockets();
-        
-        this.setupShutdownHandlers();
+    /**
+     * Check if Discord should be enabled
+     */
+    checkDiscordAvailability() {
+        try {
+            // Check if we're in offline mode
+            if (process.env.OFFLINE_MODE === 'true') {
+                logger.info('Discord disabled: Offline mode enabled');
+                this.discordEnabled = false;
+                return;
+            }
+
+            // Check if Discord bot token is provided
+            if (!process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN.trim() === '') {
+                logger.info('Discord disabled: No bot token provided');
+                this.discordEnabled = false;
+                return;
+            }
+
+            // Check if Discord client credentials are provided
+            if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) {
+                logger.warn('Discord OAuth disabled: Missing client credentials');
+                // Bot can still work without OAuth
+            }
+
+            this.discordEnabled = true;
+            logger.info('Discord enabled');
+        } catch (error) {
+            logger.error('Error checking Discord availability', {
+                error: error.message
+            });
+            this.discordEnabled = false;
+        }
     }
 
     setupMiddleware() {
-        // Trust proxy
-        this.app.set('trust proxy', 1);
-        
-        // Security and parsing middleware
-        this.app.use(express.json());
-        // Add cookie parser middleware
+        // Security middleware
+        this.app.use(helmet({
+            contentSecurityPolicy: {
+                directives: {
+                    defaultSrc: ["'self'"],
+                    styleSrc: ["'self'", "'unsafe-inline'"],
+                    scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+                    imgSrc: ["'self'", "data:", "https:"],
+                    connectSrc: ["'self'", "wss:", "ws:"],
+                    fontSrc: ["'self'"],
+                    objectSrc: ["'none'"],
+                    mediaSrc: ["'self'"],
+                    frameSrc: ["'none'"],
+                },
+            },
+        }));
+
+        // Rate limiting
+        const limiter = rateLimit({
+            windowMs: 15 * 60 * 1000, // 15 minutes
+            max: 1000, // limit each IP to 1000 requests per windowMs
+            message: 'Too many requests from this IP, please try again later.',
+            standardHeaders: true,
+            legacyHeaders: false,
+        });
+        this.app.use(limiter);
+
+        // Body parsing
+        this.app.use(express.json({ limit: '10mb' }));
+        this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
         this.app.use(cookieParser());
 
-        // Add session middleware to prevent login loops
+        // Session configuration
         this.app.use(session({
-            secret: process.env.SESSION_SECRET || 'bingo-session-secret',
+            secret: process.env.SESSION_SECRET || 'your-secret-key-change-this',
             resave: false,
-            saveUninitialized: true,
-            cookie: { 
+            saveUninitialized: false,
+            cookie: {
                 secure: process.env.NODE_ENV === 'production',
+                httpOnly: true,
                 maxAge: 24 * 60 * 60 * 1000 // 24 hours
             }
         }));
 
-        // Add cookie debugging middleware
-        this.app.use((req, res, next) => {
-            const originalSetCookie = res.setHeader;
-            
-            // Intercept setHeader calls to log Set-Cookie
-            res.setHeader = function(name, value) {
-                if (name === 'Set-Cookie') {
-                    logger.debug('Setting cookie', { 
-                        path: req.path, 
-                        cookies: Array.isArray(value) ? value : [value] 
-                    });
-                }
-                return originalSetCookie.call(this, name, value);
-            };
-            
-            next();
-        });
-
-        // Updated Helmet configuration
-        const helmetConfig = {
-            contentSecurityPolicy: {
-                useDefaults: false,
-                directives: {
-                    defaultSrc: ["'self'", "https://earthviewinc.com"],
-                    scriptSrc: [
-                        "'self'",
-                        "'unsafe-inline'",
-                        "'unsafe-eval'",
-                        "https://static.cloudflareinsights.com",
-                        "https://*.cloudflareinsights.com"
-                    ],
-                    scriptSrcElem: [
-                        "'self'",
-                        "'unsafe-inline'",
-                        "'unsafe-eval'",
-                        "https://static.cloudflareinsights.com",
-                        "https://*.cloudflareinsights.com"
-                    ],
-                    styleSrc: ["'self'", "'unsafe-inline'"],
-                    imgSrc: [
-                        "'self'",
-                        "data:",
-                        "https://earthviewinc.com",
-                        "https://*.earthviewinc.com",
-                        "https://*.cloudflareinsights.com"
-                    ],
-                    connectSrc: [
-                        "'self'",
-                        "https://*.cloudflareinsights.com",
-                        "https://*.bingo.toadbox.net"
-                    ],
-                    workerSrc: ["'self'", "blob:"],
-                    frameSrc: ["'none'"],
-                    objectSrc: ["'none'"],
-                    baseUri: ["'self'"]
-                }
-            },
-            crossOriginEmbedderPolicy: false,
-            crossOriginOpenerPolicy: { policy: "same-origin" },
-            crossOriginResourcePolicy: { policy: "cross-origin" },
-            referrerPolicy: { policy: "strict-origin-when-cross-origin" }
-        };
-
-        // Apply Helmet with config
-        this.app.use(helmet(helmetConfig));
-        
-        // Additional CORS headers
-        this.app.use((req, res, next) => {
-            res.header('Cross-Origin-Resource-Policy', 'cross-origin');
-            res.header('Access-Control-Allow-Origin', '*');
-            next();
-        });
-
-        // Rate limiting
-        const apiLimiter = rateLimit({
-            windowMs: 15 * 60 * 1000,
-            max: 500,
-            message: 'Too many requests from this IP, please try again later.',
-            standardHeaders: true,
-            legacyHeaders: false,
-            trustProxy: true,
-            skip: (req) => req.ip === '127.0.0.1',
-            keyGenerator: (req) => req.ip + req.path
-        });
-        this.app.use('/api/', apiLimiter);
-
-        // Apply authentication middleware globally
-        this.app.use(isAuthenticated);
-
-        // Static files and caching
-        this.app.use(express.static(path.join(__dirname, '../public'), {
-            setHeaders: (res, path) => {
-                if (path.endsWith('.js')) {
-                    res.setHeader('Content-Type', 'application/javascript');
-                }
-                if (path.match(/\.(css|js|jpg|png|gif)$/)) {
-                    res.setHeader('Cache-Control', 'public, max-age=3600');
-                } else {
-                    res.setHeader('Cache-Control', 'no-cache');
-                }
-            }
-        }));
-        
-        // Cache control middleware
-        this.app.use((req, res, next) => {
-            if (req.path.endsWith('.html') || req.path === '/') {
-                res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-                res.set('Pragma', 'no-cache');
-                res.set('Expires', '0');
-            }
-            else if (req.path.match(/\.(js|css)$/)) {
-                res.set('Cache-Control', 'public, max-age=0, must-revalidate');
-            }
-            next();
-        });
+        // Static files
+        this.app.use(express.static('src/public'));
     }
 
     setupRoutes() {
@@ -208,221 +150,278 @@ class Server {
 
         // Authentication routes
         this.app.use('/api/auth', authRoutes);
+        
+        // Configure Discord OAuth routes if Discord is enabled
+        // Note: Discord routes are configured within the auth router itself
 
-        // API routes
+        // New boards routes (must come before legacy API routes)
+        this.app.use('/api/boards', boardsRoutes);
+        
+        // API routes (legacy)
         this.app.use('/api', apiRoutes);
         
         // User routes
         this.app.use('/api/users', userRoutes);
-
+        
         // Notification routes
-        this.app.use('/api/notifications', notificationRoutes);
-
+        this.app.use('/api/notifications', isAuthenticated, notificationRoutes);
+        
         // Admin routes
-        this.app.use('/api/admin/users', adminUsersRoutes);
+        this.app.use('/api/admin', isAuthenticated, adminRoutes);
+        
+        // Chat routes
+        this.app.use('/api/chat', chatRoutes);
 
-        // Board view route
-        this.app.get('/board/:boardId', (req, res) => {
-            logger.debug('Serving board page', { boardId: req.params.boardId });
-            res.sendFile(path.join(__dirname, '../public/board.html'));
+        // Board routes with new URL structure
+        this.app.get('/boards', isAuthenticated, (req, res) => {
+            res.sendFile('boards.html', { root: 'src/public' });
         });
 
-        // Admin page - requires authentication
-        this.app.get('/admin', (req, res) => {
-            logger.debug('Serving admin page');
-            res.sendFile(path.join(__dirname, '../public/admin.html'));
+        // Anonymous board routes: /anonymous/:slug
+        this.app.get('/anonymous/:slug', isAuthenticated, async (req, res, next) => {
+            const { slug } = req.params;
+            
+            try {
+                // Check if anonymous board exists
+                const boardModel = require('./models/boardModel');
+                const board = await boardModel.getBoardByAnonymousSlug(slug);
+                
+                if (board) {
+                    // Serve the board page
+                    res.sendFile('board.html', { root: 'src/public' });
+                } else {
+                    // Board not found, continue to next middleware (likely 404)
+                    next();
+                }
+            } catch (error) {
+                logger.error('Error checking anonymous board existence', {
+                    error: error.message,
+                    slug
+                });
+                next();
+            }
         });
 
-        // Redirect root to login page or index based on auth status
-        this.app.get('/', (req, res) => {
-            // User is already authenticated via middleware
-            res.sendFile(path.join(__dirname, '../public/index.html'));
+        // Individual board routes: /:username/:slug
+        this.app.get('/:username/:slug', isAuthenticated, async (req, res, next) => {
+            const { username, slug } = req.params;
+            
+            // Skip if this looks like a static file, API route, or anonymous route
+            if (username.includes('.') || username.startsWith('api') || username.startsWith('css') || username.startsWith('js') || username === 'anonymous') {
+                return next();
+            }
+            
+            try {
+                // Check if board exists
+                const boardModel = require('./models/boardModel');
+                const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
+                
+                if (board) {
+                    // Serve the board page
+                    res.sendFile('board.html', { root: 'src/public' });
+                } else {
+                    // Board not found, continue to next middleware (likely 404)
+                    next();
+                }
+            } catch (error) {
+                logger.error('Error checking board existence', {
+                    error: error.message,
+                    username,
+                    slug
+                });
+                next();
+            }
         });
 
-        // Login page - direct access
-        this.app.get('/login.html', (req, res) => {
-            res.sendFile(path.join(__dirname, '../public/login.html'));
+        // Legacy board route redirect
+        this.app.get('/board/:boardId', isAuthenticated, (req, res) => {
+            // For now, redirect to the old board.html until we can determine the username
+            res.sendFile('board.html', { root: 'src/public' });
         });
 
-        // Redirect to login page for unauthenticated access
-        this.app.get('/login', (req, res) => {
-            res.redirect(constants.LOGIN_PAGE);
+        // Home page - require authentication
+        this.app.get('/', isAuthenticated, (req, res) => {
+            res.sendFile('index.html', { root: 'src/public' });
         });
 
-        // Chat routes - protected with authentication
-        this.app.use('/api/chat', isAuthenticated, chatRoutes);
+        // Admin page
+        this.app.get('/admin', isAuthenticated, (req, res) => {
+            if (!req.user.is_admin) {
+                return res.status(403).send('Access denied');
+            }
+            res.sendFile('admin.html', { root: 'src/public' });
+        });
 
-        // Improved error handling
+        // Version endpoint
+        this.app.get('/api/version', (req, res) => {
+            res.json({
+                version: process.env.npm_package_version || '1.0.0',
+                timestamp: Date.now()
+            });
+        });
+
+        // Health check endpoint
+        this.app.get('/health', (req, res) => {
+            res.json({
+                status: 'healthy',
+                timestamp: new Date().toISOString(),
+                uptime: process.uptime()
+            });
+        });
+    }
+
+    setupErrorHandling() {
+        // 404 handler
+        this.app.use((req, res) => {
+            logger.warn('404 Not Found', {
+                method: req.method,
+                path: req.path,
+                ip: req.ip
+            });
+            res.status(404).json({ error: 'Not Found' });
+        });
+
+        // Global error handler
         this.app.use((err, req, res, next) => {
-            const status = err.status || 500;
-            const message = status === 500 ? 'Internal server error' : err.message;
-
-            logger.error('Request error', {
+            logger.error('Unhandled error', {
                 error: err.message,
                 stack: err.stack,
-                path: req.path,
                 method: req.method,
-                status
+                path: req.path
             });
-
-            res.status(status).json({
-                error: message,
-                requestId: req.id
+            
+            res.status(500).json({ 
+                error: process.env.NODE_ENV === 'production' 
+                    ? 'Internal Server Error' 
+                    : err.message 
             });
         });
     }
 
-    setupDiscordBot() {
-        this.client.once('ready', async () => {
-            logger.info('Discord bot is ready', { username: this.client.user.tag });
-            const discordCommands = new DiscordCommands(boardService);
-            await discordCommands.register(this.client);
-        });
-
-        this.client.on('interactionCreate', async interaction => {
-            try {
-                const discordCommands = new DiscordCommands(boardService);
-                await discordCommands.handleCommand(interaction);
-            } catch (error) {
-                logger.error('Discord command error', { 
-                    error: error.message,
-                    command: interaction?.commandName
-                });
+    setupGracefulShutdown() {
+        const gracefulShutdown = async (signal) => {
+            if (this.isShuttingDown) {
+                logger.warn('Force shutdown initiated');
+                process.exit(1);
             }
-        });
 
-        // Handle Discord errors
-        this.client.on('error', error => {
-            logger.error('Discord client error', { error: error.message });
-        });
-    }
-
-    setupWebSockets() {
-        // Initialize WebSocket server with HTTP server
-        this.io = websocketServer.initialize(this.server);
-        
-        logger.info('WebSocket server attached to HTTP server');
-        
-        // Handle WebSocket server shutdown
-        this.server.on('close', () => {
-            if (this.io) {
-                this.io.close();
-                logger.info('WebSocket server closed');
-            }
-        });
-    }
-
-    setupShutdownHandlers() {
-        // Track connections
-        this.app.on('connection', connection => {
-            this.connections.add(connection);
-            connection.on('close', () => this.connections.delete(connection));
-        });
-
-        // Graceful shutdown handler
-        const shutdown = async (signal) => {
-            if (this.isShuttingDown) return;
             this.isShuttingDown = true;
-
-            logger.info(`Received ${signal}, starting graceful shutdown`);
+            logger.info(`Received ${signal}, starting graceful shutdown...`);
 
             // Stop accepting new connections
-            this.server?.close(() => {
+            this.server.close(() => {
                 logger.info('HTTP server closed');
             });
 
             // Close existing connections
-            this.connections.forEach(conn => conn.end());
-            this.connections.clear();
+            for (const connection of this.connections) {
+                connection.destroy();
+            }
 
-            // Disconnect Discord bot if running
-            if (!constants.OFFLINE_MODE && this.client) {
+            // Close Discord client
+            if (this.discordEnabled && this.client) {
                 try {
-                    await this.client.destroy();
-                    logger.info('Discord bot disconnected');
+                    this.client.destroy();
+                    logger.info('Discord client closed');
                 } catch (error) {
-                    logger.error('Error disconnecting Discord bot', { error: error.message });
+                    logger.error('Error closing Discord client', {
+                        error: error.message
+                    });
                 }
             }
-            
-            // Clean up any database connections or file handles
+
+            // Close database connection
             try {
-                if (boardService && typeof boardService.cleanup === 'function') {
-                    await boardService.cleanup();
-                    logger.info('Board service cleaned up');
-                }
+                await database.close();
+                logger.info('Database connection closed');
             } catch (error) {
-                logger.error('Error cleaning up board service', { error: error.message });
+                logger.error('Error closing database connection', {
+                    error: error.message
+                });
             }
 
-            // Allow ongoing requests to finish (max 30s)
-            setTimeout(() => {
-                logger.error('Forcing shutdown after timeout');
-                process.exit(1);
-            }, 30000);
-
+            logger.info('Graceful shutdown completed');
             process.exit(0);
         };
 
-        // Register shutdown handlers
-        process.on('SIGTERM', () => shutdown('SIGTERM'));
-        process.on('SIGINT', () => shutdown('SIGINT'));
-        
-        // Handle uncaught exceptions
-        process.on('uncaughtException', (error) => {
-            logger.error('Uncaught exception', { 
-                error: error.message,
-                stack: error.stack
-            });
-            shutdown('UNCAUGHT_EXCEPTION');
-        });
-        
-        // Handle unhandled promise rejections
-        process.on('unhandledRejection', (reason, promise) => {
-            logger.error('Unhandled promise rejection', { 
-                reason: reason.toString(),
-                stack: reason.stack || 'No stack trace available'
-            });
-            shutdown('UNHANDLED_REJECTION');
-        });
+        process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+        process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     }
 
     async start() {
         try {
-            // Load configuration
+            // Load configuration first
             configLoader.loadConfig();
             
-            // Initialize database
+            // Initialize database before running checks
             await database.initialize();
             
-            // Connect to Discord if not in offline mode
-            if (!constants.OFFLINE_MODE && this.client && process.env.DISCORD_BOT_TOKEN) {
-                await this.client.login(process.env.DISCORD_BOT_TOKEN);
+            // Run startup configuration checks (including migrations)
+            await startupChecks.runChecks();
+            
+            // Connect to Discord if enabled
+            if (this.discordEnabled && this.client && process.env.DISCORD_BOT_TOKEN) {
+                try {
+                    await this.client.login(process.env.DISCORD_BOT_TOKEN);
+                    logger.info('Discord bot connected successfully');
+                } catch (error) {
+                    logger.error('Failed to connect Discord bot', {
+                        error: error.message,
+                        stack: error.stack
+                    });
+                    logger.warn('Continuing without Discord bot functionality');
+                    this.discordEnabled = false;
+                }
             }
-            
-            // Continue with normal startup
-            const PORT = process.env.PORT || 3000;
-            
-            // Use this.server instead of this.app for listening
-            this.server.listen(PORT, () => {
-                logger.info(`Server running on port ${PORT}`);
-            });
-            
-            // Track active connections for graceful shutdown
-            this.server.on('connection', connection => {
+
+            // Initialize Discord bot if token is provided
+            let discordCommands = null;
+            if (process.env.DISCORD_BOT_TOKEN) {
+                try {
+                    const { DiscordCommands } = require('./routes/discord');
+                    discordCommands = new DiscordCommands();
+                    await discordCommands.initialize();
+                    logger.info('Discord bot initialized successfully');
+                } catch (error) {
+                    logger.error('Failed to initialize Discord bot', { error: error.message });
+                    logger.warn('Discord bot is disabled');
+                }
+            } else {
+                logger.warn('Discord disabled: No DISCORD_BOT_TOKEN provided');
+            }
+
+            // Initialize WebSocket server
+            websocketServer.initialize(this.server);
+
+            // Track connections for graceful shutdown
+            this.server.on('connection', (connection) => {
                 this.connections.add(connection);
                 connection.on('close', () => {
                     this.connections.delete(connection);
                 });
             });
+
+            // Start HTTP server
+            const port = process.env.PORT || 3000;
+            this.server.listen(port, () => {
+                logger.info(`Server started successfully`, {
+                    port,
+                    env: process.env.NODE_ENV,
+                    discordEnabled: this.discordEnabled,
+                    websocketEnabled: true
+                });
+            });
+
         } catch (error) {
-            logger.error('Failed to start server', error);
+            logger.error('Failed to start server', {
+                error: error.message,
+                stack: error.stack
+            });
             process.exit(1);
         }
     }
 }
 
-// Export server class
 module.exports = Server;
 
 // Start server if this file is run directly
