@@ -5,6 +5,10 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "LOG_LEVEL=DEBUG node src/private/server.js",
+    "dev:full": "concurrently \"npm run dev\" \"npm run frontend:dev\"",
+    "frontend:dev": "cd frontend && npm run dev",
+    "frontend:build": "cd frontend && npm run build",
+    "cleanup:old-frontend": "bash scripts/cleanup-old-frontend.sh",
     "start": "NODE_ENV=production node src/private/server.js",
     "start:uni": "NODE_ENV=production BOARD_MODE=unified node src/private/server.js",
     "start:ind": "NODE_ENV=production BOARD_MODE=individual node src/private/server.js",
@@ -44,5 +48,8 @@
     "sqlite3": "^5.1.6",
     "uuid": "^9.0.0",
     "winston": "^3.8.2"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
   }
 }

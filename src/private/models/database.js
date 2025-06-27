@@ -3,12 +3,14 @@ const { open } = require('sqlite');
 const path = require('path');
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
+const MigrationManager = require('../utils/migrations');
 
 class Database {
   constructor() {
     this.db = null;
-    this.dataDir = path.join(__dirname, '../../data');
+    this.dataDir = path.join(__dirname, '../data');
     this.dbPath = path.join(this.dataDir, 'bingo.sqlite');
+    this.migrationManager = null;
   }
 
   async initialize() {
@@ -22,7 +24,7 @@ class Database {
         driver: sqlite3.Database
       });
       
-      logger.info('Database connection established', { path: this.dbPath });
+      logger.database.info('Database connection established', { path: this.dbPath });
       
       // Enable foreign keys
       await this.db.exec('PRAGMA foreign_keys = ON');
@@ -30,9 +32,13 @@ class Database {
       // Create tables if they don't exist
       await this.createTables();
       
+      // Initialize migration manager and run migrations
+      this.migrationManager = new MigrationManager(this);
+      await this.migrationManager.runMigrations();
+      
       return true;
     } catch (error) {
-      logger.error('Database initialization failed', { 
+      logger.database.error('Database initialization failed', { 
         error: error.message,
         stack: error.stack
       });
@@ -42,10 +48,11 @@ class Database {
 
   async createTables() {
     try {
-      // Users table
+      // Users table with new schema (user_id will be added by migration if needed)
       await this.db.exec(`
         CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT UNIQUE,
           username TEXT NOT NULL,
           email TEXT UNIQUE,
           auth_provider TEXT, 
@@ -67,13 +74,14 @@ class Database {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           uuid TEXT UNIQUE NOT NULL,
           title TEXT NOT NULL,
-          created_by INTEGER,
+          slug TEXT,
+          created_by TEXT,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           is_public BOOLEAN DEFAULT 0,
           description TEXT,
           settings TEXT,
-          FOREIGN KEY (created_by) REFERENCES users(id)
+          FOREIGN KEY (created_by) REFERENCES users(user_id)
         )
       `);
 
@@ -88,9 +96,9 @@ class Database {
           type TEXT DEFAULT 'text',
           marked BOOLEAN DEFAULT 0,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_by INTEGER,
+          updated_by TEXT,
           FOREIGN KEY (board_id) REFERENCES boards(id),
-          FOREIGN KEY (updated_by) REFERENCES users(id),
+          FOREIGN KEY (updated_by) REFERENCES users(user_id),
           UNIQUE(board_id, row, col)
         )
       `);
@@ -104,9 +112,9 @@ class Database {
           type TEXT,
           marked BOOLEAN,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          created_by INTEGER,
+          created_by TEXT,
           FOREIGN KEY (cell_id) REFERENCES cells(id),
-          FOREIGN KEY (created_by) REFERENCES users(id)
+          FOREIGN KEY (created_by) REFERENCES users(user_id)
         )
       `);
 
@@ -115,13 +123,13 @@ class Database {
         CREATE TABLE IF NOT EXISTS board_chat (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           board_id INTEGER NOT NULL,
-          user_id INTEGER,
+          user_id TEXT,
           message TEXT NOT NULL,
           command TEXT,
           mentions TEXT,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (board_id) REFERENCES boards(id),
-          FOREIGN KEY (user_id) REFERENCES users(id)
+          FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
       `);
 
@@ -130,13 +138,13 @@ class Database {
         CREATE TABLE IF NOT EXISTS board_members (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           board_id INTEGER NOT NULL,
-          user_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
           role TEXT DEFAULT 'viewer',
           notifications_enabled BOOLEAN DEFAULT 1,
           joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           last_viewed TIMESTAMP,
           FOREIGN KEY (board_id) REFERENCES boards(id),
-          FOREIGN KEY (user_id) REFERENCES users(id),
+          FOREIGN KEY (user_id) REFERENCES users(user_id),
           UNIQUE(board_id, user_id)
         )
       `);
@@ -159,13 +167,13 @@ class Database {
       await this.db.exec(`
         CREATE TABLE IF NOT EXISTS sessions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER,
+          user_id TEXT,
           token TEXT UNIQUE NOT NULL,
           expires_at TIMESTAMP NOT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           ip_address TEXT,
           user_agent TEXT,
-          FOREIGN KEY (user_id) REFERENCES users(id)
+          FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
       `);
 
@@ -173,19 +181,51 @@ class Database {
       await this.db.exec(`
         CREATE TABLE IF NOT EXISTS notifications (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER,
+          user_id TEXT,
           message TEXT NOT NULL,
           type TEXT NOT NULL,
           is_read BOOLEAN DEFAULT 0,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           data TEXT,
-          FOREIGN KEY (user_id) REFERENCES users(id)
+          FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
       `);
 
-      logger.info('Database tables created successfully');
+      // Board versions table for versioning and snapshots
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS board_versions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          board_id INTEGER NOT NULL,
+          version_number INTEGER NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          created_by TEXT,
+          snapshot TEXT NOT NULL,
+          description TEXT,
+          FOREIGN KEY (board_id) REFERENCES boards(id),
+          FOREIGN KEY (created_by) REFERENCES users(user_id),
+          UNIQUE(board_id, version_number)
+        )
+      `);
+
+      // Images table for uploaded images
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS images (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          filename TEXT NOT NULL UNIQUE,
+          original_filename TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          path TEXT NOT NULL,
+          metadata TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )
+      `);
+
+      logger.database.info('Database tables created successfully');
     } catch (error) {
-      logger.error('Failed to create database tables', { 
+      logger.database.error('Failed to create database tables', { 
         error: error.message,
         stack: error.stack
       });
@@ -196,7 +236,7 @@ class Database {
   async close() {
     if (this.db) {
       await this.db.close();
-      logger.info('Database connection closed');
+      logger.database.info('Database connection closed');
     }
   }
 
@@ -217,7 +257,7 @@ class Database {
       return result;
     } catch (error) {
       await this.db.exec('ROLLBACK');
-      logger.error('Transaction failed', { 
+      logger.database.error('Transaction failed', { 
         error: error.message,
         stack: error.stack 
       });

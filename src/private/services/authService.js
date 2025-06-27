@@ -29,11 +29,159 @@ class AuthService {
       iterations
     };
     
-    logger.info('Site password hash initialized');
+    logger.auth.info('Site password hash initialized');
   }
   
   /**
-   * Authenticate with site password
+   * Unified authentication method
+   * @param {Object} authData - Authentication data
+   * @param {Object} requestInfo - Request information including IP and user agent
+   * @returns {Object} - Session info if authenticated, null otherwise
+   */
+  async authenticate(authData, requestInfo) {
+    const { method, ...data } = authData;
+
+    try {
+      switch (method) {
+        case 'site_password':
+          return await this.authenticateWithPassword(data.password, requestInfo);
+        
+        case 'local':
+          return await this.authenticateLocal(data.email, data.password, requestInfo);
+        
+        case 'google':
+          return await this.authenticateGoogle(data.idToken, requestInfo);
+        
+        case 'discord':
+          return await this.authenticateDiscord(data.code, data.redirectUri, requestInfo);
+        
+        default:
+          logger.auth.warn('Invalid authentication method', { method });
+          return null;
+      }
+    } catch (error) {
+      logger.auth.error('Authentication error', { 
+        method,
+        error: error.message,
+        ip: requestInfo.ip
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Register a new user account
+   * @param {Object} userData - User registration data
+   * @param {Object} requestInfo - Request information
+   * @returns {Object} - Registration result
+   */
+  async register(userData, requestInfo) {
+    const { method, username, email, password } = userData;
+
+    try {
+      // Validate required fields based on method
+      if (method === 'local') {
+        if (!email || !password || !username) {
+          throw new Error('Email, password, and username are required for local registration');
+        }
+
+        // Check if user already exists
+        const existingUser = await userModel.getUserByEmail(email);
+        if (existingUser) {
+          throw new Error('User with this email already exists');
+        }
+      }
+
+      // Determine approval status based on method
+      const approvalStatus = this.determineApprovalStatus(method, userData);
+
+      // Create user with random user_id
+      const user = await userModel.createUser({
+        username,
+        email,
+        auth_provider: method,
+        auth_id: method === 'local' ? email : null,
+        password,
+        approval_status: approvalStatus,
+        discord_guild_id: userData.discord_guild_id
+      });
+
+      logger.auth.info('User registered successfully', {
+        userId: user.user_id,
+        username,
+        method,
+        approvalStatus,
+        ip: requestInfo.ip
+      });
+
+      // If approved, create session immediately
+      if (approvalStatus === 'approved') {
+        const session = await this.createSession(user.user_id, requestInfo);
+        return {
+          success: true,
+          user,
+          session,
+          message: 'Registration successful'
+        };
+      } else {
+        return {
+          success: true,
+          user,
+          session: null,
+          message: 'Registration successful. Account pending approval.'
+        };
+      }
+
+    } catch (error) {
+      logger.auth.error('Registration failed', {
+        method,
+        username,
+        email,
+        error: error.message,
+        ip: requestInfo.ip
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Determine approval status based on auth method and data
+   * @param {string} method - Authentication method
+   * @param {Object} userData - User data
+   * @returns {string} - Approval status
+   */
+  determineApprovalStatus(method, userData) {
+    switch (method) {
+      case 'site_password':
+      case 'anonymous':
+        return 'approved'; // Anonymous access is always approved
+      
+      case 'discord':
+        // Auto-approve if user is in approved Discord guild
+        if (userData.discord_guild_id && this.isApprovedGuild(userData.discord_guild_id)) {
+          return 'approved';
+        }
+        return 'pending';
+      
+      case 'google':
+      case 'local':
+      default:
+        return 'pending'; // Require manual approval for these methods
+    }
+  }
+
+  /**
+   * Check if Discord guild is in approved list
+   * @param {string} guildId - Discord guild ID
+   * @returns {boolean} - True if approved
+   */
+  isApprovedGuild(guildId) {
+    const approvedGuilds = process.env.DISCORD_APPROVED_GUILDS?.split(',') || [];
+    return approvedGuilds.includes(guildId);
+  }
+  
+  /**
+   * Authenticate with site password (anonymous access)
    * @param {string} password - Site password
    * @param {Object} requestInfo - Request information including IP and user agent
    * @returns {Object} - Session info if authenticated, null otherwise
@@ -49,7 +197,7 @@ class AuthService {
       );
       
       if (!isValid) {
-        logger.warn('Failed site password authentication attempt', { ip: requestInfo.ip });
+        logger.auth.warn('Failed site password authentication attempt', { ip: requestInfo.ip });
         return null;
       }
       
@@ -57,10 +205,10 @@ class AuthService {
       const anonymousUser = await userModel.createAnonymousUser('Anonymous User');
       
       // Create a new session
-      const session = await this.createSession(anonymousUser.id, requestInfo);
+      const session = await this.createSession(anonymousUser.user_id, requestInfo);
       
-      logger.info('Successful site password authentication', { 
-        userId: anonymousUser.id,
+      logger.auth.info('Successful site password authentication', { 
+        userId: anonymousUser.user_id,
         ip: requestInfo.ip 
       });
       
@@ -69,7 +217,7 @@ class AuthService {
         session
       };
     } catch (error) {
-      logger.error('Authentication error with site password', { 
+      logger.auth.error('Authentication error with site password', { 
         error: error.message,
         ip: requestInfo.ip
       });
@@ -90,18 +238,32 @@ class AuthService {
       const user = await userModel.validateCredentials(email, password);
       
       if (!user) {
-        logger.warn('Failed local authentication attempt', { 
+        logger.auth.warn('Failed local authentication attempt', { 
           email,
           ip: requestInfo.ip 
         });
         return null;
       }
+
+      // Check if user is approved
+      if (user.approval_status !== 'approved') {
+        logger.auth.warn('Authentication attempt by unapproved user', {
+          userId: user.user_id,
+          email,
+          status: user.approval_status,
+          ip: requestInfo.ip
+        });
+        return {
+          error: 'Account pending approval',
+          status: user.approval_status
+        };
+      }
       
       // Create a new session
-      const session = await this.createSession(user.id, requestInfo);
+      const session = await this.createSession(user.user_id, requestInfo);
       
-      logger.info('Successful local authentication', { 
-        userId: user.id,
+      logger.auth.info('Successful local authentication', { 
+        userId: user.user_id,
         email,
         ip: requestInfo.ip 
       });
@@ -111,7 +273,7 @@ class AuthService {
         session
       };
     } catch (error) {
-      logger.error('Authentication error with local credentials', { 
+      logger.auth.error('Authentication error with local credentials', { 
         error: error.message,
         email,
         ip: requestInfo.ip
@@ -132,7 +294,7 @@ class AuthService {
       const userInfo = await this.verifyGoogleToken(idToken);
       
       if (!userInfo) {
-        logger.warn('Failed Google authentication - invalid token', {
+        logger.auth.warn('Failed Google authentication - invalid token', {
           ip: requestInfo.ip
         });
         return null;
@@ -143,24 +305,45 @@ class AuthService {
       
       // Create user if they don't exist
       if (!user) {
+        const approvalStatus = this.determineApprovalStatus('google', {});
+        
         user = await userModel.createUser({
           username: userInfo.name || userInfo.email.split('@')[0],
           email: userInfo.email,
           auth_provider: 'google',
-          auth_id: userInfo.sub
+          auth_id: userInfo.sub,
+          approval_status: approvalStatus
         });
         
-        logger.info('New Google user created', { 
-          userId: user.id,
-          email: userInfo.email 
+        logger.auth.info('New Google user created', { 
+          userId: user.user_id,
+          email: userInfo.email,
+          approvalStatus
         });
+
+        // If pending approval, return early
+        if (approvalStatus === 'pending') {
+          return {
+            user,
+            session: null,
+            message: 'Account created. Pending approval.'
+          };
+        }
+      } else {
+        // Check if existing user is approved
+        if (user.approval_status !== 'approved') {
+          return {
+            error: 'Account pending approval',
+            status: user.approval_status
+          };
+        }
       }
       
       // Create a new session
-      const session = await this.createSession(user.id, requestInfo);
+      const session = await this.createSession(user.user_id, requestInfo);
       
-      logger.info('Successful Google authentication', { 
-        userId: user.id,
+      logger.auth.info('Successful Google authentication', { 
+        userId: user.user_id,
         email: userInfo.email,
         ip: requestInfo.ip 
       });
@@ -170,7 +353,7 @@ class AuthService {
         session
       };
     } catch (error) {
-      logger.error('Authentication error with Google', { 
+      logger.auth.error('Authentication error with Google', { 
         error: error.message,
         ip: requestInfo.ip
       });
@@ -191,7 +374,7 @@ class AuthService {
       const tokenData = await this.getDiscordToken(code, redirectUri);
       
       if (!tokenData || !tokenData.access_token) {
-        logger.warn('Failed Discord authentication - invalid code', {
+        logger.auth.warn('Failed Discord authentication - invalid code', {
           ip: requestInfo.ip
         });
         return null;
@@ -200,47 +383,40 @@ class AuthService {
       // Get Discord user info
       const userInfo = await this.getDiscordUserInfo(tokenData.access_token);
       
-      if (!userInfo || !userInfo.id) {
-        logger.warn('Failed Discord authentication - invalid user info', {
+      if (!userInfo) {
+        logger.auth.warn('Failed Discord authentication - invalid user info', {
           ip: requestInfo.ip
         });
         return null;
       }
       
-      // Check if user exists
-      let user = await userModel.getUserByAuthId('discord', userInfo.id);
+      // Authenticate Discord user
+      const authResult = await this.authenticateDiscordUser(userInfo);
       
-      // Create user if they don't exist
-      if (!user) {
-        user = await userModel.createUser({
+      if (!authResult.success) {
+        logger.auth.warn('Failed Discord authentication - user not authenticated', {
           username: userInfo.username,
-          email: userInfo.email,
-          auth_provider: 'discord',
-          auth_id: userInfo.id
+          ip: requestInfo.ip,
+          reason: authResult.message
         });
-        
-        logger.info('New Discord user created', { 
-          userId: user.id,
-          discordId: userInfo.id,
-          username: userInfo.username
-        });
+        return authResult;
       }
       
       // Create a new session
-      const session = await this.createSession(user.id, requestInfo);
+      const session = await this.createSession(authResult.user.user_id, requestInfo);
       
-      logger.info('Successful Discord authentication', { 
-        userId: user.id,
-        discordId: userInfo.id,
+      logger.auth.info('Successful Discord authentication', { 
+        userId: authResult.user.user_id,
+        username: userInfo.username,
         ip: requestInfo.ip 
       });
       
       return {
-        user,
+        user: authResult.user,
         session
       };
     } catch (error) {
-      logger.error('Authentication error with Discord', { 
+      logger.auth.error('Authentication error with Discord', { 
         error: error.message,
         ip: requestInfo.ip
       });
@@ -249,107 +425,90 @@ class AuthService {
   }
   
   /**
-   * Authenticate a Discord user
-   * @param {Object} userData - User data from Discord
-   * @returns {Object} - Session token and user object
+   * Authenticate Discord user (create or get existing)
+   * @param {Object} userInfo - Discord user information
+   * @returns {Object} - Authentication result
    */
-  async authenticateDiscordUser(userData) {
-    const { username, email, auth_id, discord_guild_id } = userData;
-    
+  async authenticateDiscordUser(userInfo) {
     try {
-      // Check if user exists by auth provider + auth ID
+      const auth_id = userInfo.id;
+    
+      // Check if user exists
       let user = await userModel.getUserByAuthId('discord', auth_id);
       
-      if (user) {
-        // Update existing user with new guild info
-        const db = database.getDb();
-        await db.run(`
-          UPDATE users
-          SET discord_guild_id = ?, last_login = CURRENT_TIMESTAMP
-          WHERE id = ?
-        `, [discord_guild_id, user.id]);
+      if (!user) {
+        // Create new Discord user
+        const approvalStatus = this.determineApprovalStatus('discord', {
+          discord_guild_id: userInfo.guild_id
+        });
         
-        // Get updated user info
-        user = await userModel.getUserById(user.id);
+        user = await userModel.createUser({
+          username: userInfo.username,
+          email: userInfo.email,
+          auth_provider: 'discord',
+          auth_id: auth_id,
+          discord_guild_id: userInfo.guild_id,
+          approval_status: approvalStatus
+        });
         
-        // Check if user is in approved guild and needs approval update
-        if (user.approval_status === 'pending' && this.isInApprovedGuild(discord_guild_id)) {
-          await userModel.approveUser(user.id);
-          // Get user with updated approval status
-          user = await userModel.getUserById(user.id);
+        logger.auth.info('New Discord user created', {
+          userId: user.user_id,
+          username: userInfo.username,
+          approvalStatus
+        });
+
+        // If pending approval, return early
+        if (approvalStatus === 'pending') {
+          return {
+            success: false,
+            user,
+            message: 'Account created. Pending approval.'
+          };
         }
       } else {
-        // Create new user
-        user = await userModel.createUser({
-          username,
-          email,
-          auth_provider: 'discord',
-          auth_id,
-          discord_guild_id
-        });
+        // Check if existing user is approved
+        if (user.approval_status !== 'approved') {
+          return {
+            success: false,
+            error: 'Account pending approval',
+            status: user.approval_status
+          };
+        }
       }
       
-      // Create session for the user
-      const sessionToken = await sessionModel.createSession(user.id);
-      
       return {
-        sessionToken,
+        success: true,
         user
       };
     } catch (error) {
-      logger.error('Discord authentication failed', {
+      logger.auth.error('Discord authentication failed', {
         error: error.message,
         auth_id
       });
-      throw error;
+      return {
+        success: false,
+        error: 'Authentication failed'
+      };
     }
   }
   
   /**
-   * Check if user is in an approved Discord guild
-   * @param {string} guildIds - Comma-separated Discord guild IDs
-   * @returns {boolean} - True if in approved guild
-   */
-  isInApprovedGuild(guildIds) {
-    if (!guildIds) return false;
-    
-    const userGuilds = guildIds.split(',');
-    const approvedGuilds = process.env.APPROVED_DISCORD_GUILDS 
-      ? process.env.APPROVED_DISCORD_GUILDS.split(',') 
-      : [];
-      
-    // Check if user is in any approved guild
-    return userGuilds.some(guildId => approvedGuilds.includes(guildId));
-  }
-  
-  /**
-   * Verify a session token
+   * Verify session token
    * @param {string} token - Session token
-   * @returns {Object} - User info if valid session, null otherwise
+   * @returns {Object|null} - User object if valid session, null otherwise
    */
   async verifySession(token) {
     try {
-      // Get session
-      const session = await sessionModel.getSessionByToken(token);
+      const session = await sessionModel.getSession(token);
       
-      if (!session) {
+      if (!session || new Date(session.expires_at) < new Date()) {
         return null;
       }
       
-      // Get user
-      const user = await userModel.getUserById(session.user_id);
-      
-      if (!user) {
-        await sessionModel.deleteSession(token);
-        return null;
-      }
-      
-      // Extend session expiry
-      await sessionModel.extendSession(token);
-      
+      const user = await userModel.getUserByUserId(session.user_id);
       return user;
     } catch (error) {
-      logger.error('Session verification error', { 
+      logger.auth.error('Session verification error', { 
         error: error.message,
         tokenLength: token ? token.length : 0
       });
@@ -358,15 +517,15 @@ class AuthService {
   }
   
   /**
-   * End a session
+   * Logout user by invalidating session
    * @param {string} token - Session token
-   * @returns {boolean} - Success status
+   * @returns {boolean} - True if successful
    */
   async logout(token) {
     try {
       return await sessionModel.deleteSession(token);
     } catch (error) {
-      logger.error('Logout error', { 
+      logger.auth.error('Logout error', { 
         error: error.message,
         tokenLength: token ? token.length : 0
       });
@@ -375,17 +534,21 @@ class AuthService {
   }
   
   /**
-   * Create a new session
-   * @param {number} userId - User ID
-   * @param {Object} requestInfo - Request information including IP and user agent
-   * @returns {Object} - Created session
+   * Create a new session for user
+   * @param {string} userId - User ID
+   * @param {Object} requestInfo - Request information
+   * @returns {Object} - Session object
    */
   async createSession(userId, requestInfo) {
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + this.sessionExpiry);
+    
     return await sessionModel.createSession({
       userId,
+      token,
+      expiresAt,
       ipAddress: requestInfo.ip,
-      userAgent: requestInfo.userAgent,
-      expiresIn: this.sessionExpiry
+      userAgent: requestInfo.userAgent
     });
   }
   
@@ -410,7 +573,7 @@ class AuthService {
       const hash = crypto.pbkdf2Sync(password, storedSalt, iterations, 64, 'sha256').toString('hex');
       return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(storedHash));
     } catch (error) {
-      logger.error('Password verification error', { error: error.message });
+      logger.auth.error('Password verification error', { error: error.message });
       return false;
     }
   }
@@ -434,7 +597,7 @@ class AuthService {
       
       return null;
     } catch (error) {
-      logger.error('Google token verification error', { error: error.message });
+      logger.auth.error('Google token verification error', { error: error.message });
       return null;
     }
   }
@@ -462,7 +625,7 @@ class AuthService {
       
       return response.data;
     } catch (error) {
-      logger.error('Discord token exchange error', { error: error.message });
+      logger.auth.error('Discord token exchange error', { error: error.message });
       return null;
     }
   }
@@ -482,7 +645,7 @@ class AuthService {
       
       return response.data;
     } catch (error) {
-      logger.error('Discord user info error', { error: error.message });
+      logger.auth.error('Discord user info error', { error: error.message });
       return null;
     }
   }

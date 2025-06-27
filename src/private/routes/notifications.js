@@ -2,15 +2,19 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
 const notificationModel = require('../models/notificationModel');
+const { validatePagination } = require('../middleware/validation');
+const { 
+  sendError, 
+  sendSuccess, 
+  asyncHandler 
+} = require('../utils/responseHelpers');
 
 /**
  * Get notifications for authenticated user
  */
-router.get('/', async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const limit = parseInt(req.query.limit) || 20;
-    const offset = parseInt(req.query.offset) || 0;
+router.get('/', validatePagination, asyncHandler(async (req, res) => {
+  const userId = req.user.user_id;
+  const { limit, offset } = req.pagination;
     const unreadOnly = req.query.unreadOnly === 'true';
     
     const notifications = await notificationModel.getUserNotifications(userId, {
@@ -22,7 +26,13 @@ router.get('/', async (req, res) => {
     // Get unread count
     const unreadCount = await notificationModel.getUnreadCount(userId);
     
-    return res.json({
+  logger.notification.debug('Notifications retrieved', {
+    userId,
+    notificationCount: notifications.length,
+    unreadCount
+  });
+  
+  return sendSuccess(res, {
       notifications,
       meta: {
         total: notifications.length,
@@ -30,73 +40,56 @@ router.get('/', async (req, res) => {
         limit,
         offset
       }
-    });
-  } catch (error) {
-    logger.error('Failed to get notifications', {
-      error: error.message,
-      userId: req.user?.id
-    });
-    return res.status(500).json({ error: 'Failed to get notifications' });
-  }
-});
+  }, 200, 'Notification');
+}, 'API'));
 
 /**
  * Mark a notification as read
  */
-router.post('/:notificationId/read', async (req, res) => {
-  try {
-    const userId = req.user.id;
+router.post('/:notificationId/read', asyncHandler(async (req, res) => {
+  const userId = req.user.user_id;
     const { notificationId } = req.params;
     
     const success = await notificationModel.markAsRead(notificationId, userId);
     
     if (!success) {
-      return res.status(404).json({ error: 'Notification not found or not owned by user' });
+    return sendError(res, 404, 'Notification not found or not owned by user', null, 'API');
     }
     
     // Get updated unread count
     const unreadCount = await notificationModel.getUnreadCount(userId);
     
-    return res.json({ 
-      success: true,
+  logger.notification.debug('Notification marked as read', {
+    userId,
+    notificationId,
       unreadCount
     });
-  } catch (error) {
-    logger.error('Failed to mark notification as read', {
-      error: error.message,
-      userId: req.user?.id,
-      notificationId: req.params.notificationId
-    });
-    return res.status(500).json({ error: 'Failed to mark notification as read' });
-  }
-});
+  
+  return sendSuccess(res, { 
+    success: true,
+    unreadCount
+  }, 200, 'Notification');
+}, 'API'));
 
 /**
  * Mark all notifications as read
  */
-router.post('/read-all', async (req, res) => {
-  try {
-    const userId = req.user.id;
+router.post('/read-all', asyncHandler(async (req, res) => {
+  const userId = req.user.user_id;
     
     await notificationModel.markAllAsRead(userId);
     
-    return res.json({ success: true, unreadCount: 0 });
-  } catch (error) {
-    logger.error('Failed to mark all notifications as read', {
-      error: error.message,
-      userId: req.user?.id
-    });
-    return res.status(500).json({ error: 'Failed to mark all notifications as read' });
-  }
-});
+  logger.notification.info('All notifications marked as read', { userId });
+  
+  return sendSuccess(res, { success: true, unreadCount: 0 }, 200, 'Notification');
+}, 'API'));
 
 /**
  * Create a test notification (for development)
  */
 if (process.env.NODE_ENV !== 'production') {
-  router.post('/test', async (req, res) => {
-    try {
-      const userId = req.user.id;
+  router.post('/test', asyncHandler(async (req, res) => {
+    const userId = req.user.user_id;
       const { type = 'test', message = 'Test notification' } = req.body;
       
       const notification = await notificationModel.createNotification({
@@ -109,15 +102,13 @@ if (process.env.NODE_ENV !== 'production') {
         }
       });
       
-      return res.json({ success: true, notification });
-    } catch (error) {
-      logger.error('Failed to create test notification', {
-        error: error.message,
-        userId: req.user?.id
-      });
-      return res.status(500).json({ error: 'Failed to create test notification' });
-    }
-  });
+    logger.notification.debug('Test notification created', { 
+      userId, 
+      notificationId: notification.id 
+    });
+    
+    return sendSuccess(res, { success: true, notification }, 200, 'Notification');
+  }, 'API'));
 }
 
 module.exports = router; 

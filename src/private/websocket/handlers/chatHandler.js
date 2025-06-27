@@ -57,7 +57,7 @@ class ChatHandler {
         
         callback({ success: true, message: messageData });
       } catch (error) {
-        logger.error('Error in chat:message handler', {
+        logger.websocket.error('Error in chat:message handler', {
           error: error.message,
           userId: socket.user?.id,
           boardId: data?.boardId
@@ -101,7 +101,7 @@ class ChatHandler {
         
         callback({ success: true, result });
       } catch (error) {
-        logger.error('Error in chat:command handler', {
+        logger.websocket.error('Error in chat:command handler', {
           error: error.message,
           userId: socket.user?.id,
           data
@@ -132,7 +132,7 @@ class ChatHandler {
           messages
         });
       } catch (error) {
-        logger.error('Error in chat:history handler', {
+        logger.websocket.error('Error in chat:history handler', {
           error: error.message,
           userId: socket.user?.id,
           boardId: data?.boardId
@@ -174,7 +174,7 @@ class ChatHandler {
         
         callback({ success: true });
       } catch (error) {
-        logger.error('Error in chat:delete handler', {
+        logger.websocket.error('Error in chat:delete handler', {
           error: error.message,
           userId: socket.user?.id,
           data

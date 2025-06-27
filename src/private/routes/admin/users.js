@@ -3,58 +3,61 @@ const router = express.Router();
 const logger = require('../../utils/logger');
 const userModel = require('../../models/userModel');
 const notificationModel = require('../../models/notificationModel');
+const { 
+  sendError, 
+  sendSuccess, 
+  asyncHandler 
+} = require('../../utils/responseHelpers');
 
 /**
  * Get all pending users awaiting approval
  */
-router.get('/pending', async (req, res) => {
-  try {
+router.get('/pending', asyncHandler(async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const offset = parseInt(req.query.offset) || 0;
     
     // Only admins can access this endpoint (checked in middleware)
     if (!req.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
+    return sendError(res, 403, 'Admin access required', null, 'Admin');
     }
     
     const pendingUsers = await userModel.getPendingUsers({ limit, offset });
     
-    return res.json({
+  logger.admin.debug('Pending users retrieved', {
+    adminId: req.user?.id,
+    userCount: pendingUsers.length,
+    limit,
+    offset
+  });
+  
+  return sendSuccess(res, {
       pendingUsers,
       meta: {
         limit,
         offset
       }
-    });
-  } catch (error) {
-    logger.error('Failed to get pending users', {
-      error: error.message,
-      adminId: req.user?.id
-    });
-    return res.status(500).json({ error: 'Failed to get pending users' });
-  }
-});
+  }, 200, 'Admin');
+}, 'Admin'));
 
 /**
  * Approve a user
  */
-router.post('/approve/:userId', async (req, res) => {
-  try {
+router.post('/approve/:userId', asyncHandler(async (req, res) => {
     const { userId } = req.params;
     
     // Only admins can approve users
     if (!req.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
+    return sendError(res, 403, 'Admin access required', null, 'Admin');
     }
     
     const success = await userModel.approveUser(userId);
     
     if (!success) {
-      return res.status(404).json({ error: 'User not found or approval failed' });
+    return sendError(res, 404, 'User not found or approval failed', null, 'Admin');
     }
     
     // Log the approval action
-    logger.info('User approved by admin', {
+  logger.admin.info('User approved by admin', {
       userId,
       adminId: req.user.id,
       adminUsername: req.user.username
@@ -71,37 +74,28 @@ router.post('/approve/:userId', async (req, res) => {
       }
     });
     
-    return res.json({ success: true });
-  } catch (error) {
-    logger.error('Failed to approve user', {
-      error: error.message,
-      adminId: req.user?.id,
-      userId: req.params.userId
-    });
-    return res.status(500).json({ error: 'Failed to approve user' });
-  }
-});
+  return sendSuccess(res, { success: true }, 200, 'Admin');
+}, 'Admin'));
 
 /**
  * Reject a user
  */
-router.post('/reject/:userId', async (req, res) => {
-  try {
+router.post('/reject/:userId', asyncHandler(async (req, res) => {
     const { userId } = req.params;
     
     // Only admins can reject users
     if (!req.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
+    return sendError(res, 403, 'Admin access required', null, 'Admin');
     }
     
     const success = await userModel.rejectUser(userId);
     
     if (!success) {
-      return res.status(404).json({ error: 'User not found or rejection failed' });
+    return sendError(res, 404, 'User not found or rejection failed', null, 'Admin');
     }
     
     // Log the rejection action
-    logger.info('User rejected by admin', {
+  logger.admin.info('User rejected by admin', {
       userId,
       adminId: req.user.id,
       adminUsername: req.user.username
@@ -118,22 +112,13 @@ router.post('/reject/:userId', async (req, res) => {
       }
     });
     
-    return res.json({ success: true });
-  } catch (error) {
-    logger.error('Failed to reject user', {
-      error: error.message,
-      adminId: req.user?.id,
-      userId: req.params.userId
-    });
-    return res.status(500).json({ error: 'Failed to reject user' });
-  }
-});
+  return sendSuccess(res, { success: true }, 200, 'Admin');
+}, 'Admin'));
 
 /**
  * Get all users with pagination
  */
-router.get('/', async (req, res) => {
-  try {
+router.get('/', asyncHandler(async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const offset = parseInt(req.query.offset) || 0;
     const search = req.query.search || '';
@@ -141,7 +126,7 @@ router.get('/', async (req, res) => {
     
     // Only admins can access this endpoint
     if (!req.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
+    return sendError(res, 403, 'Admin access required', null, 'Admin');
     }
     
     const db = require('../../models/database').getDb();
@@ -196,22 +181,24 @@ router.get('/', async (req, res) => {
     const countResult = await db.get(countQuery, countParams);
     const total = countResult ? countResult.total : 0;
     
-    return res.json({
+  logger.admin.debug('Users list retrieved', {
+    adminId: req.user?.id,
+    userCount: users.length,
+    total,
+    search,
+    status
+  });
+  
+  return sendSuccess(res, {
       users,
       meta: {
         total,
         limit,
-        offset
-      }
-    });
-  } catch (error) {
-    logger.error('Failed to get users', {
-      error: error.message,
-      adminId: req.user?.id
-    });
-    return res.status(500).json({ error: 'Failed to get users' });
-  }
-});
+      offset,
+      hasMore: (offset + limit) < total
+    }
+  }, 200, 'Admin');
+}, 'Admin'));
 
 /**
  * Make a user an admin

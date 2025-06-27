@@ -1,62 +1,68 @@
+const database = require('../models/database');
 const logger = require('../utils/logger');
-const versionModel = require('../models/versionModel');
-const boardModel = require('../models/boardModel');
-const constants = require('../config/constants');
+const DatabaseHelpers = require('../utils/databaseHelpers');
 
 class VersionService {
   constructor() {
-    this.maxVersions = constants.MAX_BOARD_VERSIONS || 50;
-    this.autoVersionThreshold = constants.AUTO_VERSION_THRESHOLD || 10;
+    this.dbHelpers = new DatabaseHelpers(database);
+    this.maxVersionsPerBoard = 50; // Limit to prevent storage bloat
   }
 
   /**
-   * Create a new version snapshot of a board
+   * Create a version snapshot of a board
    * @param {number} boardId - Board ID
-   * @param {number} userId - User ID creating the version
+   * @param {string} userId - User ID creating the version
    * @param {string} description - Version description
    * @returns {Object} - Created version
    */
-  async createVersion(boardId, userId, description = '') {
+  async createVersion(boardId, userId, description = 'Auto-save') {
     try {
-      // Export board to JSON format first
-      const boardExport = await boardModel.exportToJson(boardId);
+      return await this.dbHelpers.transaction(async (helpers) => {
+        // Get current board state
+        const board = await this._getBoardSnapshot(boardId);
       
-      if (!boardExport) {
-        throw new Error('Failed to export board');
+        if (!board) {
+          throw new Error('Board not found');
       }
       
-      // Get the next version number
-      const latestVersion = await versionModel.getLatestVersion(boardId);
-      const versionNumber = latestVersion ? latestVersion.version_number + 1 : 1;
+        // Get next version number
+        const versionNumber = await this._getNextVersionNumber(boardId);
       
       // Create version record
-      const version = await versionModel.createVersion({
+        const version = await helpers.insertRecord('board_versions', {
+          board_id: boardId,
+          version_number: versionNumber,
+          created_by: userId,
+          snapshot: JSON.stringify(board),
+          description
+        }, 'Version');
+        
+        // Clean up old versions if we exceed the limit
+        await this._cleanupOldVersions(helpers, boardId);
+      
+        logger.version.info('Board version created', {
         boardId,
-        versionNumber,
-        createdBy: userId,
-        snapshot: JSON.stringify(boardExport),
-        description: description || `Version ${versionNumber}`
-      });
-      
-      if (!version) {
-        throw new Error('Failed to create version');
-      }
-      
-      // Prune old versions if we've exceeded the maximum
-      await this.pruneOldVersions(boardId);
-      
-      logger.info('Board version created', {
-        boardId,
+          versionId: version.id,
+          versionNumber,
         userId,
-        versionNumber
-      });
-      
-      return version;
+          description
+        });
+        
+        return {
+          id: version.id,
+          boardId,
+          versionNumber,
+          createdBy: userId,
+          createdAt: version.created_at,
+          description
+        };
+      }, 'Version');
     } catch (error) {
-      logger.error('Failed to create board version', {
+      logger.version.error('Failed to create board version', {
         error: error.message,
         boardId,
-        userId
+        userId,
+        description
       });
       throw error;
     }
@@ -66,191 +72,324 @@ class VersionService {
    * Get all versions for a board
    * @param {number} boardId - Board ID
    * @param {Object} options - Query options
-   * @returns {Array} - Array of versions
+   * @returns {Object} - Paginated versions
    */
-  async getVersions(boardId, options = {}) {
+  async getBoardVersions(boardId, options = {}) {
     const { limit = 20, offset = 0 } = options;
     
     try {
-      const versions = await versionModel.getVersions(boardId, {
+      const result = await this.dbHelpers.getPaginatedRecords('board_versions', {
+        conditions: { board_id: boardId },
+        orderBy: 'version_number DESC',
         limit,
-        offset
-      });
+        offset,
+        select: 'id, board_id, version_number, created_by, created_at, description'
+      }, 'Version');
       
-      return versions.map(version => ({
-        id: version.id,
-        boardId: version.board_id,
-        versionNumber: version.version_number,
-        createdBy: version.created_by,
-        createdAt: version.created_at,
-        description: version.description
-      }));
-    } catch (error) {
-      logger.error('Failed to get board versions', {
-        error: error.message,
-        boardId
-      });
-      return [];
-    }
-  }
-
-  /**
-   * Get a specific version
-   * @param {number} boardId - Board ID
-   * @param {number} versionNumber - Version number
-   * @returns {Object} - Version details
-   */
-  async getVersion(boardId, versionNumber) {
-    try {
-      const version = await versionModel.getVersion(boardId, versionNumber);
-      
-      if (!version) {
-        throw new Error('Version not found');
+      // Get usernames for created_by
+      for (const version of result.records) {
+        const user = await this.dbHelpers.getRecord(
+          'SELECT username FROM users WHERE user_id = ?',
+          [version.created_by],
+          'get version creator',
+          'Version'
+        );
+        version.createdByUsername = user ? user.username : 'Unknown';
       }
       
-      return {
-        id: version.id,
-        boardId: version.board_id,
-        versionNumber: version.version_number,
-        createdBy: version.created_by,
-        createdAt: version.created_at,
-        description: version.description,
-        snapshot: JSON.parse(version.snapshot)
-      };
+      return result;
     } catch (error) {
-      logger.error('Failed to get board version', {
+      logger.version.error('Failed to get board versions', {
         error: error.message,
         boardId,
-        versionNumber
+        options
       });
       throw error;
     }
   }
 
   /**
-   * Revert a board to a specific version
-   * @param {number} boardId - Board ID
-   * @param {number} versionNumber - Version to revert to
-   * @param {number} userId - User ID performing the revert
-   * @returns {boolean} - Success status
+   * Get a specific version
+   * @param {number} versionId - Version ID
+   * @returns {Object|null} - Version with snapshot data
    */
-  async revertToVersion(boardId, versionNumber, userId) {
+  async getVersion(versionId) {
     try {
-      // First create a snapshot of the current state
-      await this.createVersion(
-        boardId, 
-        userId, 
-        `Pre-revert snapshot before reverting to version ${versionNumber}`
+      const version = await this.dbHelpers.getRecord(
+        `SELECT id, board_id, version_number, created_by, created_at, 
+                snapshot, description
+         FROM board_versions WHERE id = ?`,
+        [versionId],
+        'get version',
+        'Version'
       );
       
-      // Get the version to revert to
-      const version = await versionModel.getVersion(boardId, versionNumber);
-      
       if (!version) {
-        throw new Error('Version not found');
+        return null;
       }
       
-      // Parse the snapshot
-      const snapshot = JSON.parse(version.snapshot);
-      
-      // Import from the snapshot
-      const success = await boardModel.importFromJson(snapshot, userId);
-      
-      if (!success) {
-        throw new Error('Failed to import board from version snapshot');
+      // Parse snapshot JSON
+      try {
+        version.snapshot = JSON.parse(version.snapshot);
+      } catch (e) {
+        logger.version.error('Failed to parse version snapshot', {
+          versionId,
+          error: e.message
+        });
+        version.snapshot = null;
       }
       
-      // Create a new version to mark the revert
-      await versionModel.createVersion({
-        boardId,
-        versionNumber: version.version_number + 1,
-        createdBy: userId,
-        snapshot: version.snapshot,
-        description: `Reverted to version ${versionNumber}`
+      return version;
+    } catch (error) {
+      logger.version.error('Failed to get version', {
+        error: error.message,
+        versionId
       });
+      throw error;
+    }
+  }
+
+  /**
+   * Revert board to a specific version
+   * @param {number} boardId - Board ID
+   * @param {number} versionId - Version ID to revert to
+   * @param {string} userId - User ID performing the revert
+   * @returns {boolean} - Success status
+   */
+  async revertToVersion(boardId, versionId, userId) {
+    try {
+      return await this.dbHelpers.transaction(async (helpers) => {
+        // Get the version to revert to
+        const version = await this.getVersion(versionId);
+        
+        if (!version || version.board_id !== boardId) {
+          throw new Error('Version not found or does not belong to this board');
+        }
+        
+        if (!version.snapshot) {
+          throw new Error('Version snapshot is corrupted');
+        }
+        
+        // Create a backup version before reverting
+        await this.createVersion(boardId, userId, `Backup before revert to v${version.version_number}`);
       
-      logger.info('Board reverted to version', {
+        // Update board with version data
+        const boardData = {
+          title: version.snapshot.title,
+          description: version.snapshot.description || '',
+          is_public: version.snapshot.is_public ? 1 : 0,
+          settings: JSON.stringify(version.snapshot.settings || {}),
+          last_updated: new Date().toISOString()
+        };
+        
+        await helpers.updateRecord('boards', boardData, { id: boardId }, 'Version');
+        
+        // Clear existing cells
+        await helpers.deleteRecord('cells', { board_id: boardId }, 'Version');
+        
+        // Restore cells from snapshot
+        if (version.snapshot.cells && Array.isArray(version.snapshot.cells)) {
+          for (let row = 0; row < version.snapshot.cells.length; row++) {
+            const rowData = version.snapshot.cells[row];
+            if (Array.isArray(rowData)) {
+              for (let col = 0; col < rowData.length; col++) {
+                const cell = rowData[col];
+                if (cell) {
+                  await helpers.insertRecord('cells', {
+                    board_id: boardId,
+                    row,
+                    col,
+                    value: cell.value || '',
+                    type: cell.type || 'text',
+                    marked: cell.marked ? 1 : 0,
+                    updated_by: userId
+                  }, 'Version');
+                }
+              }
+            }
+          }
+        }
+        
+        logger.version.info('Board reverted to version', {
         boardId,
-        versionNumber,
+          versionId,
+          versionNumber: version.version_number,
         userId
       });
       
       return true;
+      }, 'Version');
     } catch (error) {
-      logger.error('Failed to revert board version', {
+      logger.version.error('Failed to revert board to version', {
         error: error.message,
         boardId,
-        versionNumber,
+        versionId,
         userId
       });
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a version
+   * @param {number} versionId - Version ID
+   * @returns {boolean} - Success status
+   */
+  async deleteVersion(versionId) {
+    try {
+      const deletedRows = await this.dbHelpers.deleteRecord(
+        'board_versions',
+        { id: versionId },
+        'Version'
+      );
+      
+      if (deletedRows > 0) {
+        logger.version.info('Version deleted', { versionId });
+        return true;
+      }
+      
       return false;
-    }
-  }
-
-  /**
-   * Track cell changes and create automatic versions as needed
-   * @param {number} boardId - Board ID
-   * @param {number} userId - User ID making changes
-   * @param {Object} cellChange - Cell change details
-   * @returns {void}
-   */
-  async trackChanges(boardId, userId, cellChange = {}) {
-    try {
-      // Get the count of changes since last version
-      const changeCount = await versionModel.getChangeCount(boardId);
-      
-      // Increment the change counter
-      await versionModel.incrementChangeCounter(boardId);
-      
-      // If we've reached the threshold, create a version
-      if (changeCount >= this.autoVersionThreshold) {
-        await this.createVersion(boardId, userId, 'Automatic version after multiple changes');
-        
-        // Reset the change counter
-        await versionModel.resetChangeCounter(boardId);
-      }
     } catch (error) {
-      logger.error('Failed to track changes for versioning', {
+      logger.version.error('Failed to delete version', {
         error: error.message,
-        boardId,
-        userId
+        versionId
       });
-      // Don't throw, this is a background process
+      throw error;
     }
   }
 
   /**
-   * Prune old versions to stay within the maximum
+   * Get board snapshot for versioning
    * @param {number} boardId - Board ID
-   * @returns {number} - Number of versions pruned
+   * @returns {Object|null} - Board snapshot
    */
-  async pruneOldVersions(boardId) {
+  async _getBoardSnapshot(boardId) {
     try {
-      const count = await versionModel.countVersions(boardId);
+      // Get board data
+      const board = await this.dbHelpers.getRecord(
+        `SELECT id, uuid, title, slug, created_by, is_public, 
+                description, settings, created_at, last_updated
+         FROM boards WHERE id = ?`,
+        [boardId],
+        'get board for snapshot',
+        'Version'
+      );
       
-      if (count <= this.maxVersions) {
-        return 0; // No pruning needed
+      if (!board) {
+        return null;
       }
       
-      // Calculate how many to delete
-      const toDelete = count - this.maxVersions;
+      // Get all cells
+      const cells = await this.dbHelpers.getRecords(
+        `SELECT row, col, value, type, marked
+         FROM cells WHERE board_id = ?
+         ORDER BY row, col`,
+        [boardId],
+        'get cells for snapshot',
+        'Version'
+      );
       
-      // Delete oldest versions, but keep the very first one for historical record
-      const pruned = await versionModel.deleteOldestVersions(boardId, toDelete);
+      // Parse settings
+      let settings = {};
+      try {
+        settings = JSON.parse(board.settings || '{}');
+      } catch (e) {
+        settings = {};
+      }
       
-      logger.info('Pruned old board versions', {
-        boardId,
-        pruned,
-        maxVersions: this.maxVersions
+      // Format cells as grid
+      const boardSize = settings.size || 5;
+      const cellGrid = Array(boardSize)
+        .fill(null)
+        .map(() => Array(boardSize).fill(null));
+      
+      cells.forEach(cell => {
+        if (cell.row < boardSize && cell.col < boardSize) {
+          cellGrid[cell.row][cell.col] = {
+            value: cell.value,
+            type: cell.type,
+            marked: cell.marked === 1
+          };
+        }
       });
       
-      return pruned;
+      return {
+        id: board.id,
+        uuid: board.uuid,
+        title: board.title,
+        slug: board.slug,
+        created_by: board.created_by,
+        is_public: board.is_public === 1,
+        description: board.description,
+        settings,
+        cells: cellGrid,
+        created_at: board.created_at,
+        last_updated: board.last_updated
+      };
     } catch (error) {
-      logger.error('Failed to prune old versions', {
+      logger.version.error('Failed to get board snapshot', {
         error: error.message,
         boardId
       });
-      return 0;
+      throw error;
+    }
+  }
+
+  /**
+   * Get next version number for a board
+   * @param {number} boardId - Board ID
+   * @returns {number} - Next version number
+   */
+  async _getNextVersionNumber(boardId) {
+    const result = await this.dbHelpers.getRecord(
+      'SELECT MAX(version_number) as max_version FROM board_versions WHERE board_id = ?',
+      [boardId],
+      'get max version number',
+      'Version'
+    );
+    
+    return (result && result.max_version) ? result.max_version + 1 : 1;
+  }
+
+  /**
+   * Clean up old versions to stay within limit
+   * @param {Object} helpers - Database helpers
+   * @param {number} boardId - Board ID
+   */
+  async _cleanupOldVersions(helpers, boardId) {
+    try {
+      const count = await helpers.countRecords('board_versions', { board_id: boardId }, 'Version');
+      
+      if (count > this.maxVersionsPerBoard) {
+        const excess = count - this.maxVersionsPerBoard;
+        
+        // Get oldest versions to delete
+        const oldVersions = await helpers.getRecords(
+          `SELECT id FROM board_versions 
+           WHERE board_id = ? 
+           ORDER BY version_number ASC 
+           LIMIT ?`,
+          [boardId, excess],
+          'get old versions to cleanup',
+          'Version'
+        );
+        
+        // Delete old versions
+        for (const version of oldVersions) {
+          await helpers.deleteRecord('board_versions', { id: version.id }, 'Version');
+        }
+        
+        logger.version.info('Cleaned up old versions', {
+          boardId,
+          deletedCount: oldVersions.length
+        });
+      }
+    } catch (error) {
+      logger.version.error('Failed to cleanup old versions', {
+        error: error.message,
+        boardId
+      });
+      // Don't throw here, as this is cleanup and shouldn't fail the main operation
     }
   }
 }

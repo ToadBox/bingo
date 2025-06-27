@@ -4,12 +4,15 @@ const logger = require('../utils/logger');
 const constants = require('../config/constants');
 const SlugGenerator = require('../utils/slugGenerator');
 const configLoader = require('../utils/configLoader');
+const DatabaseHelpers = require('../utils/databaseHelpers');
+const { createValidator } = require('../middleware/validation');
 
 class BoardModel {
   constructor() {
     this.defaultBoardSize = constants.DEFAULT_BOARD_SIZE || 5;
     this.minBoardSize = constants.MIN_BOARD_SIZE || 3;
     this.maxBoardSize = constants.MAX_BOARD_SIZE || 9;
+    this.dbHelpers = new DatabaseHelpers(database);
   }
 
   /**
@@ -18,15 +21,12 @@ class BoardModel {
    * @returns {number} - Valid board size
    */
   validateBoardSize(size) {
-    // Convert to number if it's a string
     const sizeNum = parseInt(size, 10);
     
-    // Check if it's a valid number
     if (isNaN(sizeNum)) {
       return this.defaultBoardSize;
     }
     
-    // Clamp size between min and max
     return Math.max(this.minBoardSize, Math.min(sizeNum, this.maxBoardSize));
   }
 
@@ -50,9 +50,7 @@ class BoardModel {
     const boardSize = this.validateBoardSize(size);
     
     try {
-      const db = database.getDb();
-      
-      return await database.transaction(async (db) => {
+      return await this.dbHelpers.transaction(async (helpers) => {
         // Generate slug
         let slug;
         if (!createdBy) {
@@ -62,60 +60,54 @@ class BoardModel {
         } else {
           // User board - generate unique slug for this user
           const checkSlugExists = async (testSlug) => {
-            const existing = await db.get(`
-              SELECT id FROM boards 
-              WHERE slug = ? AND created_by = ?
-            `, [testSlug, createdBy]);
-            return !!existing;
+            return await helpers.recordExists('boards', {
+              slug: testSlug,
+              created_by: createdBy
+            }, 'Board');
           };
 
           slug = await SlugGenerator.generateUniqueSlug(title, checkSlugExists);
         }
 
-        // Create board record with size information and slug
-        const boardResult = await db.run(`
-          INSERT INTO boards (uuid, title, slug, created_by, is_public, description, settings)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `, [
+        // Create board record
+        const boardData = {
           uuid, 
           title, 
           slug,
-          createdBy, 
-          isPublic ? 1 : 0, 
+          created_by: createdBy,
+          is_public: isPublic ? 1 : 0,
           description,
-          JSON.stringify({
+          settings: JSON.stringify({
             size: boardSize,
             freeSpace,
             createdByName
           })
-        ]);
+        };
+
+        const board = await helpers.insertRecord('boards', boardData, 'Board');
         
-        if (!boardResult.lastID) {
-          throw new Error('Failed to create board');
-        }
+        // Create empty cells for the board
+        await this._createEmptyCells(helpers, board.id, boardSize);
         
-        const boardId = boardResult.lastID;
-        
-        // Create empty cells for the board with the specified size
-        await this._createEmptyCells(db, boardId, boardSize);
-        
-        logger.info('Board created successfully', {
-          id: boardId,
+        logger.board.info('Board created successfully', {
+          id: board.id,
           uuid,
           title,
           slug,
-          size: boardSize
+          size: boardSize,
+          createdBy
         });
         
-        // Return the full board
-        return this.getBoardById(boardId);
-      });
+        // Return the full board with cells
+        return await this.getBoardById(board.id);
+      }, 'Board');
     } catch (error) {
-      logger.error('Failed to create board', {
+      logger.board.error('Failed to create board', {
         error: error.message,
         title,
         uuid,
-        size
+        size,
+        createdBy
       });
       throw error;
     }
@@ -128,19 +120,29 @@ class BoardModel {
    */
   async getBoardById(id) {
     try {
-      const board = await this._getBoardRecord(id);
+      const board = await this.dbHelpers.getRecord(
+        `SELECT id, uuid, title, slug, created_by, created_at, last_updated, 
+                is_public, description, settings
+         FROM boards WHERE id = ?`,
+        [id],
+        'get board by ID',
+        'Board'
+      );
       
       if (!board) {
         return null;
       }
       
+      // Parse settings JSON
+      board.settings = this._parseSettings(board.settings);
+      
       // Get cells for the board
       const cells = await this._getBoardCells(id);
-      board.cells = this._formatCellsAsGrid(cells);
+      board.cells = this._formatCellsAsGrid(cells, board.settings.size);
       
       return board;
     } catch (error) {
-      logger.error('Failed to get board by ID', {
+      logger.board.error('Failed to get board by ID', {
         error: error.message,
         id
       });
@@ -155,23 +157,29 @@ class BoardModel {
    */
   async getBoardByUUID(uuid) {
     try {
-      const db = database.getDb();
-      const board = await db.get(`
-        SELECT id, uuid, title, slug, created_by, created_at, last_updated, is_public, description, settings
-        FROM boards WHERE uuid = ?
-      `, [uuid]);
+      const board = await this.dbHelpers.getRecord(
+        `SELECT id, uuid, title, slug, created_by, created_at, last_updated, 
+                is_public, description, settings
+         FROM boards WHERE uuid = ?`,
+        [uuid],
+        'get board by UUID',
+        'Board'
+      );
       
       if (!board) {
         return null;
       }
       
+      // Parse settings JSON
+      board.settings = this._parseSettings(board.settings);
+      
       // Get cells for the board
       const cells = await this._getBoardCells(board.id);
-      board.cells = this._formatCellsAsGrid(cells);
+      board.cells = this._formatCellsAsGrid(cells, board.settings.size);
       
       return board;
     } catch (error) {
-      logger.error('Failed to get board by UUID', {
+      logger.board.error('Failed to get board by UUID', {
         error: error.message,
         uuid
       });
@@ -187,45 +195,48 @@ class BoardModel {
    */
   async getBoardByUsernameAndSlug(username, slug) {
     try {
-      const db = database.getDb();
-      
-      let query;
-      let params;
+      let board;
       
       if (username === 'server') {
         // Server board - no specific user
-        query = `
-          SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, b.last_updated, 
-                 b.is_public, b.description, b.settings
+        board = await this.dbHelpers.getRecord(
+          `SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, 
+                  b.last_updated, b.is_public, b.description, b.settings
           FROM boards b
-          WHERE b.slug = ? AND b.created_by IS NULL
-        `;
-        params = [slug];
+           WHERE b.slug = ? AND b.created_by IS NULL`,
+          [slug],
+          'get server board by slug',
+          'Board'
+        );
       } else {
-        // User board
-        query = `
-          SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, b.last_updated, 
-                 b.is_public, b.description, b.settings, u.username
+        // User board - need to join with users table
+        board = await this.dbHelpers.getRecord(
+          `SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, 
+                  b.last_updated, b.is_public, b.description, b.settings,
+                  u.username
           FROM boards b
-          JOIN users u ON b.created_by = u.id
-          WHERE u.username = ? AND b.slug = ?
-        `;
-        params = [username, slug];
+           JOIN users u ON b.created_by = u.user_id
+           WHERE b.slug = ? AND u.username = ?`,
+          [slug, username],
+          'get user board by username and slug',
+          'Board'
+        );
       }
-      
-      const board = await db.get(query, params);
       
       if (!board) {
         return null;
       }
       
+      // Parse settings JSON
+      board.settings = this._parseSettings(board.settings);
+      
       // Get cells for the board
       const cells = await this._getBoardCells(board.id);
-      board.cells = this._formatCellsAsGrid(cells);
+      board.cells = this._formatCellsAsGrid(cells, board.settings.size);
       
       return board;
     } catch (error) {
-      logger.error('Failed to get board by username and slug', {
+      logger.board.error('Failed to get board by username and slug', {
         error: error.message,
         username,
         slug
@@ -235,135 +246,95 @@ class BoardModel {
   }
 
   /**
-   * Get anonymous board by slug
-   * @param {string} slug - Board slug
-   * @returns {Object|null} - Board object or null if not found
-   */
-  async getBoardByAnonymousSlug(slug) {
-    try {
-      const db = database.getDb();
-      
-      // Anonymous boards are created by users with auth_provider = 'anonymous'
-      const query = `
-        SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, b.last_updated, 
-               b.is_public, b.description, b.settings, u.username, u.auth_provider
-        FROM boards b
-        JOIN users u ON b.created_by = u.id
-        WHERE b.slug = ? AND u.auth_provider = 'anonymous'
-      `;
-      
-      const board = await db.get(query, [slug]);
-      
-      if (!board) {
-        return null;
-      }
-      
-      // Get cells for the board
-      const cells = await this._getBoardCells(board.id);
-      board.cells = this._formatCellsAsGrid(cells);
-      
-      // Extract createdByName from settings if available
-      if (board.settings) {
-        try {
-          const settings = JSON.parse(board.settings);
-          board.createdByName = settings.createdByName || 'Anonymous';
-        } catch (e) {
-          board.createdByName = 'Anonymous';
-        }
-      }
-      
-      return board;
-    } catch (error) {
-      logger.error('Failed to get anonymous board by slug', {
-        error: error.message,
-        slug
-      });
-      return null;
-    }
-  }
-
-  /**
-   * Get all boards with optional filtering
+   * Get all boards with optional filtering and pagination
    * @param {Object} options - Query options
-   * @returns {Array} - Array of boards
+   * @returns {Object} - Paginated boards result
    */
   async getAllBoards(options = {}) {
     const {
       userId = null,
-      includePublic = true,
-      limit = 50,
+      isPublic = null,
+      search = null,
+      limit = 20,
       offset = 0,
-      sortBy = 'last_updated',
-      sortOrder = 'DESC',
-      searchTerm = null
+      orderBy = 'last_updated DESC'
     } = options;
 
     try {
-      const db = database.getDb();
+      let conditions = {};
+      let joins = '';
+      let select = `b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, 
+                    b.last_updated, b.is_public, b.description, b.settings`;
       
-      let query = `
-        SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, b.last_updated, 
-               b.is_public, b.description, b.settings,
-               u.username as creator_username,
-               COUNT(c.id) as cellCount,
-               SUM(CASE WHEN c.marked = 1 THEN 1 ELSE 0 END) as markedCount
-        FROM boards b
-        LEFT JOIN users u ON b.created_by = u.id
-        LEFT JOIN cells c ON b.id = c.board_id AND c.value IS NOT NULL AND c.value != ''
-        WHERE 1=1
+      // Add user join if we need username
+      if (!userId) {
+        joins = 'LEFT JOIN users u ON b.created_by = u.user_id';
+        select += ', u.username';
+      }
+      
+      // Build conditions
+      if (userId) {
+        conditions.created_by = userId;
+        }
+      
+      if (isPublic !== null) {
+        conditions.is_public = isPublic ? 1 : 0;
+      }
+      
+      // Handle search
+      let searchClause = '';
+      let searchParams = [];
+      if (search) {
+        searchClause = 'AND (b.title LIKE ? OR b.description LIKE ?)';
+        searchParams = [`%${search}%`, `%${search}%`];
+      }
+      
+      // Build the query
+      const { clause: whereClause, values: whereValues } = this.dbHelpers.buildWhereClause(conditions);
+      const allValues = [...whereValues, ...searchParams];
+      
+      const sql = `
+        SELECT ${select}
+        FROM boards b ${joins}
+        ${whereClause} ${searchClause}
+        ORDER BY ${orderBy}
+        LIMIT ${limit} OFFSET ${offset}
       `;
       
-      const params = [];
+      const countSql = `
+        SELECT COUNT(*) as total
+        FROM boards b ${joins}
+        ${whereClause} ${searchClause}
+      `;
       
-      // Add user filter
-      if (userId) {
-        if (includePublic) {
-          query += ` AND (b.created_by = ? OR b.is_public = 1)`;
-          params.push(userId);
-        } else {
-          query += ` AND b.created_by = ?`;
-          params.push(userId);
-        }
-      } else if (includePublic) {
-        query += ` AND b.is_public = 1`;
-      }
+      const [boards, totalResult] = await Promise.all([
+        this.dbHelpers.getRecords(sql, allValues, 'get all boards', 'Board'),
+        this.dbHelpers.getRecord(countSql, allValues, 'count boards', 'Board')
+      ]);
       
-      // Add search filter
-      if (searchTerm) {
-        query += ` AND (b.title LIKE ? OR b.description LIKE ?)`;
-        params.push(`%${searchTerm}%`, `%${searchTerm}%`);
-      }
-      
-      // Group by board
-      query += ` GROUP BY b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, b.last_updated, 
-                 b.is_public, b.description, b.settings, u.username`;
-      
-      // Add sorting
-      const validSortColumns = ['created_at', 'last_updated', 'title'];
-      const validSortOrders = ['ASC', 'DESC'];
-      
-      if (validSortColumns.includes(sortBy) && validSortOrders.includes(sortOrder.toUpperCase())) {
-        query += ` ORDER BY b.${sortBy} ${sortOrder.toUpperCase()}`;
-      } else {
-        query += ` ORDER BY b.last_updated DESC`;
-      }
-      
-      // Add pagination
-      query += ` LIMIT ? OFFSET ?`;
-      params.push(limit, offset);
-      
-      const boards = await db.all(query, params);
-      
-      logger.debug('Retrieved boards', {
-        count: boards.length,
-        userId,
-        includePublic,
-        searchTerm
+      // Parse settings for each board
+      boards.forEach(board => {
+        board.settings = this._parseSettings(board.settings);
       });
       
-      return boards;
+      const total = totalResult ? totalResult.total : 0;
+      const totalPages = Math.ceil(total / limit);
+      const currentPage = Math.floor(offset / limit) + 1;
+      
+      return {
+        boards,
+        pagination: {
+          total,
+          totalPages,
+          currentPage,
+          limit,
+          offset,
+          hasNext: currentPage < totalPages,
+          hasPrev: currentPage > 1
+        }
+      };
     } catch (error) {
-      logger.error('Failed to get all boards', {
+      logger.board.error('Failed to get all boards', {
         error: error.message,
         options
       });
@@ -372,56 +343,93 @@ class BoardModel {
   }
 
   /**
-   * Update board
-   * @param {number} id - Board ID
+   * Update a board
+   * @param {number} boardId - Board ID
    * @param {Object} updates - Updates to apply
-   * @returns {Object|null} - Updated board or null if not found
+   * @returns {Object|null} - Updated board or null
    */
-  async updateBoard(id, updates) {
+  async updateBoard(boardId, updates) {
     try {
-      const db = database.getDb();
+      const allowedUpdates = ['title', 'description', 'is_public', 'settings'];
+      const updateData = {};
       
-      const allowedUpdates = ['title', 'description', 'is_public', 'settings', 'slug'];
-      const updateFields = [];
-      const updateValues = [];
-      
+      // Filter and prepare updates
       for (const [key, value] of Object.entries(updates)) {
         if (allowedUpdates.includes(key)) {
-          updateFields.push(`${key} = ?`);
-          updateValues.push(value);
+          if (key === 'settings' && typeof value === 'object') {
+            updateData[key] = JSON.stringify(value);
+          } else {
+            updateData[key] = value;
+          }
         }
       }
       
-      if (updateFields.length === 0) {
-        logger.warn('No valid updates provided', { id, updates });
-        return this.getBoardById(id);
+      if (Object.keys(updateData).length === 0) {
+        throw new Error('No valid updates provided');
       }
       
       // Add last_updated timestamp
-      updateFields.push('last_updated = CURRENT_TIMESTAMP');
-      updateValues.push(id);
+      updateData.last_updated = new Date().toISOString();
       
-      const query = `
-        UPDATE boards 
-        SET ${updateFields.join(', ')} 
-        WHERE id = ?
-      `;
+      const updatedRows = await this.dbHelpers.updateRecord(
+        'boards',
+        updateData,
+        { id: boardId },
+        'Board'
+      );
       
-      const result = await db.run(query, updateValues);
-      
-      if (result.changes === 0) {
-        logger.warn('Board not found for update', { id });
+      if (updatedRows === 0) {
         return null;
       }
       
-      logger.info('Board updated successfully', { id, updates });
+      logger.board.info('Board updated successfully', {
+        boardId,
+        updates: Object.keys(updateData)
+      });
       
-      return this.getBoardById(id);
+      return await this.getBoardById(boardId);
     } catch (error) {
-      logger.error('Failed to update board', {
+      logger.board.error('Failed to update board', {
         error: error.message,
-        id,
+        boardId,
         updates
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a board
+   * @param {number} boardId - Board ID
+   * @returns {boolean} - Success status
+   */
+  async deleteBoard(boardId) {
+    try {
+      return await this.dbHelpers.transaction(async (helpers) => {
+        // Delete related data first
+        await helpers.deleteRecord('cell_history', { 
+          cell_id: `(SELECT id FROM cells WHERE board_id = ${boardId})` 
+        }, 'Board');
+        
+        await helpers.deleteRecord('cells', { board_id: boardId }, 'Board');
+        await helpers.deleteRecord('board_chat', { board_id: boardId }, 'Board');
+        await helpers.deleteRecord('board_members', { board_id: boardId }, 'Board');
+        await helpers.deleteRecord('board_settings', { board_id: boardId }, 'Board');
+        
+        // Delete the board itself
+        const deletedRows = await helpers.deleteRecord('boards', { id: boardId }, 'Board');
+        
+        if (deletedRows > 0) {
+          logger.board.info('Board deleted successfully', { boardId });
+          return true;
+        }
+        
+        return false;
+      }, 'Board');
+    } catch (error) {
+      logger.board.error('Failed to delete board', {
+        error: error.message,
+        boardId
       });
       throw error;
     }
@@ -769,120 +777,38 @@ class BoardModel {
   }
 
   /**
-   * Delete a board and all related data
-   * @param {number} boardId - Board ID
-   * @returns {boolean} - Success status
-   */
-  async deleteBoard(boardId) {
-    try {
-      const db = database.getDb();
-      return await database.transaction(async (db) => {
-        // 1. Get all cell IDs for this board (needed for cell_history deletion)
-        const cells = await db.all(`
-          SELECT id FROM cells
-          WHERE board_id = ?
-        `, [boardId]);
-        
-        const cellIds = cells.map(cell => cell.id);
-        
-        // 2. Delete cell history records first
-        if (cellIds.length > 0) {
-          const placeholders = cellIds.map(() => '?').join(',');
-          await db.run(`
-            DELETE FROM cell_history
-            WHERE cell_id IN (${placeholders})
-          `, cellIds);
-          
-          logger.debug(`Deleted cell history records for board ${boardId}`);
-        }
-        
-        // 3. Delete all cells
-        await db.run(`
-          DELETE FROM cells
-          WHERE board_id = ?
-        `, [boardId]);
-        
-        logger.debug(`Deleted cells for board ${boardId}`);
-        
-        // 4. Delete board chat messages
-        await db.run(`
-          DELETE FROM board_chat
-          WHERE board_id = ?
-        `, [boardId]);
-        
-        logger.debug(`Deleted chat messages for board ${boardId}`);
-        
-        // 5. Delete board members
-        await db.run(`
-          DELETE FROM board_members
-          WHERE board_id = ?
-        `, [boardId]);
-        
-        logger.debug(`Deleted member records for board ${boardId}`);
-        
-        // 6. Delete board settings
-        await db.run(`
-          DELETE FROM board_settings
-          WHERE board_id = ?
-        `, [boardId]);
-        
-        logger.debug(`Deleted settings for board ${boardId}`);
-        
-        // 7. Finally, delete the board itself
-        const result = await db.run(`
-          DELETE FROM boards
-          WHERE id = ?
-        `, [boardId]);
-        
-        logger.info(`Board ${boardId} deleted with all related data`);
-        
-        return result.changes > 0;
-      });
-    } catch (error) {
-      logger.error('Failed to delete board', {
-        error: error.message,
-        boardId
-      });
-      return false;
-    }
-  }
-
-  /**
    * Create an empty grid of cells for a new board
    * @param {Object} db - Database connection
    * @param {number} boardId - Board ID
    * @param {number} size - Board size
    */
-  async _createEmptyCells(db, boardId, size = null) {
+  async _createEmptyCells(helpers, boardId, size) {
     try {
-      let boardSize = size;
-      
-      // If no size provided, get it from settings
-      if (!boardSize) {
-        const settings = await this.getBoardSettings(boardId);
-        boardSize = settings.size;
-      }
-      
-      // Validate size
-      boardSize = this.validateBoardSize(boardSize);
+      const boardSize = this.validateBoardSize(size);
       
       // Create empty cells for the board
-      const stmt = await db.prepare(`
-        INSERT INTO cells (board_id, row, col, value, type, marked)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      
       for (let row = 0; row < boardSize; row++) {
         for (let col = 0; col < boardSize; col++) {
-          await stmt.run(boardId, row, col, '', 'text', 0);
+          await helpers.insertRecord('cells', {
+            board_id: boardId,
+            row,
+            col,
+            value: '',
+            type: 'text',
+            marked: 0
+          }, 'Board');
         }
       }
       
-      await stmt.finalize();
+      logger.board.debug('Created empty cells for board', {
+        boardId,
+        size: boardSize,
+        totalCells: boardSize * boardSize
+      });
       
       return true;
     } catch (error) {
-      logger.error('Failed to create empty cells', {
+      logger.board.error('Failed to create empty cells', {
         error: error.message,
         boardId,
         size
@@ -910,12 +836,14 @@ class BoardModel {
    * @returns {Array} - Array of cell objects
    */
   async _getBoardCells(boardId) {
-    const db = database.getDb();
-    return await db.all(`
-      SELECT id, board_id, row, col, value, type, marked
+    return await this.dbHelpers.getRecords(
+      `SELECT id, board_id, row, col, value, type, marked, last_updated, updated_by
       FROM cells WHERE board_id = ?
-      ORDER BY row ASC, col ASC
-    `, [boardId]);
+       ORDER BY row ASC, col ASC`,
+      [boardId],
+      'get board cells',
+      'Board'
+    );
   }
 
   /**
@@ -938,24 +866,19 @@ class BoardModel {
    * @param {Array} cells - Array of cell objects
    * @returns {Array} - 2D grid of cells
    */
-  _formatCellsAsGrid(cells) {
+  _formatCellsAsGrid(cells, size) {
     if (!cells || cells.length === 0) {
       return [];
     }
     
-    // Determine the board size from the cells
-    const maxRow = Math.max(...cells.map(cell => cell.row)) + 1;
-    const maxCol = Math.max(...cells.map(cell => cell.col)) + 1;
-    const boardSize = Math.max(maxRow, maxCol);
-    
     // Create an empty grid
-    const grid = Array(boardSize)
+    const grid = Array(size)
       .fill(null)
-      .map(() => Array(boardSize).fill(null));
+      .map(() => Array(size).fill(null));
     
     // Fill the grid with cells
     for (const cell of cells) {
-      if (cell.row < boardSize && cell.col < boardSize) {
+      if (cell.row < size && cell.col < size) {
         grid[cell.row][cell.col] = {
           id: cell.id,
           value: cell.value,
@@ -1160,6 +1083,37 @@ class BoardModel {
         newSize
       });
       throw error;
+    }
+  }
+
+  /**
+   * Parse settings JSON
+   * @param {string} settings - Settings JSON string
+   * @returns {Object} - Parsed settings
+   */
+  _parseSettings(settings) {
+    if (!settings) {
+      return {
+        size: this.defaultBoardSize,
+        freeSpace: true
+      };
+    }
+    
+    try {
+      const parsedSettings = JSON.parse(settings);
+      return {
+        size: this.validateBoardSize(parsedSettings.size || this.defaultBoardSize),
+        freeSpace: parsedSettings.freeSpace !== false
+      };
+    } catch (e) {
+      logger.error('Failed to parse board settings', {
+        error: e.message,
+        settings
+      });
+      return {
+        size: this.defaultBoardSize,
+        freeSpace: true
+      };
     }
   }
 }

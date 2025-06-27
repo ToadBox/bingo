@@ -4,6 +4,15 @@ const logger = require('../utils/logger');
 const rateLimit = require('express-rate-limit');
 const authService = require('../services/authService');
 const userModel = require('../models/userModel');
+const { 
+  sendError, 
+  sendSuccess, 
+  asyncHandler, 
+  validateRequired, 
+  setAuthCookie,
+  clearAuthCookie 
+} = require('../utils/responseHelpers');
+const { getRequestInfo } = require('../utils/authHelpers');
 
 // Rate limiting for login attempts to prevent brute force
 const loginLimiter = rateLimit({
@@ -12,576 +21,467 @@ const loginLimiter = rateLimit({
   message: { error: 'Too many login attempts, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,
-  skipSuccessfulRequests: false, // Count successful logins against the rate limit
-  keyGenerator: (req) => {
-    // Use both IP and a forwarded IP if available (for proxied requests)
-    return req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  }
+  skipSuccessfulRequests: false
 });
 
-// Check if Discord should be enabled
-const isDiscordEnabled = () => {
-  try {
-    // Check if we're in offline mode
-    if (process.env.OFFLINE_MODE === 'true') {
-      logger.info('Discord is disabled in offline mode');
-      return false;
-    }
+// Rate limiting for registration
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3, // 3 registration attempts per IP per hour
+  message: { error: 'Too many registration attempts, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
-    // Check if Discord bot token is provided
-    if (!process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN.trim() === '') {
-      logger.info('Discord is disabled because DISCORD_BOT_TOKEN is not provided');
-      return false;
-    }
-
-    // Check if Discord client credentials are provided
-    if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) {
-      logger.info('Discord is disabled because DISCORD_CLIENT_ID or DISCORD_CLIENT_SECRET is not provided');
-      return false;
-    }
-
-    return true;
-  } catch (error) {
-    logger.error('Error checking Discord availability', { error: error.message });
-    return false;
+/**
+ * Unified authentication endpoint
+ * Handles all authentication methods: site_password, local, google, discord
+ */
+router.post('/authenticate', loginLimiter, asyncHandler(async (req, res) => {
+  const { method } = req.body;
+  
+  if (!method) {
+    return sendError(res, 400, 'Authentication method is required', null, 'Auth');
   }
-};
 
-// Configure Discord OAuth routes if Discord is enabled
-if (isDiscordEnabled()) {
-  logger.info('Configuring Discord OAuth routes');
-
-  // Discord OAuth login endpoints
-  router.get('/discord', (req, res) => {
-    const clientId = process.env.DISCORD_CLIENT_ID;
-    const redirectUri = `${process.env.APP_URL}/api/auth/discord/callback`;
-    const scope = 'identify email';
-    
-    if (!clientId) {
-      logger.error('Discord OAuth attempted but DISCORD_CLIENT_ID not configured');
-      return res.redirect('/login.html?error=discord_not_configured');
-    }
-    
-    const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}`;
-    
-    res.redirect(discordAuthUrl);
-  });
-
-  router.get('/discord/callback', async (req, res) => {
-    const { code } = req.query;
-    
-    if (!code) {
-      return res.redirect('/login.html?error=discord_auth_failed');
-    }
-    
-    try {
-      // Get request info for auth
-      const requestInfo = {
-        ip: req.ip,
-        userAgent: req.headers['user-agent']
-      };
-      
-      const redirectUri = `${process.env.APP_URL}/api/auth/discord/callback`;
-      
-      // Authenticate with Discord
-      const authResult = await authService.authenticateDiscord(code, redirectUri, requestInfo);
+  const requestInfo = getRequestInfo(req);
+  const authResult = await authService.authenticate(req.body, requestInfo);
       
       if (!authResult) {
-        return res.redirect('/login.html?error=discord_auth_failed');
-      }
-      
-      // Set the token as a cookie
-      res.cookie('auth_token', authResult.session.token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
-        sameSite: 'strict',
-        path: '/'
-      });
-      
-      logger.info('Successful Discord login', { 
-        userId: authResult.user.id,
-        username: authResult.user.username,
-        ip: req.ip 
-      });
-      
-      // Redirect to home
-      res.redirect('/');
-    } catch (error) {
-      logger.error('Discord authentication error', { error: error.message });
-      res.redirect('/login.html?error=discord_auth_failed');
-    }
-  });
+    return sendError(res, 401, 'Authentication failed', null, 'Auth');
+  }
 
-  logger.info('Discord OAuth routes configured');
-} else {
-  logger.info('Discord OAuth routes disabled');
+  // Handle pending approval
+  if (authResult.error) {
+    return sendError(res, 403, authResult.error, { 
+      status: authResult.status 
+    }, 'Auth');
+  }
+
+  // Handle successful authentication
+  if (authResult.session) {
+    setAuthCookie(res, authResult.session.token);
+    
+    logger.auth.info('User authenticated successfully', {
+      userId: authResult.user.user_id,
+      method,
+      ip: requestInfo.ip
+    });
+
+    return sendSuccess(res, {
+      user: {
+        userId: authResult.user.user_id,
+        username: authResult.user.username,
+        email: authResult.user.email,
+        isAdmin: !!authResult.user.is_admin,
+        authProvider: authResult.user.auth_provider
+      },
+      message: 'Authentication successful'
+    }, 200, 'Auth');
+  }
+
+  // Handle registration with pending approval
+  if (authResult.message) {
+    return sendSuccess(res, {
+      message: authResult.message,
+      requiresApproval: !authResult.session
+    }, 200, 'Auth');
+  }
+
+  return sendError(res, 500, 'Authentication processing failed', null, 'Auth');
+}, 'Auth'));
+
+/**
+ * User registration endpoint
+ * Handles registration for local accounts
+ */
+router.post('/register', registerLimiter, asyncHandler(async (req, res) => {
+  validateRequired(req, ['method', 'username']);
+  
+  const { method, username, email, password } = req.body;
+  
+  // Validate method
+  if (!['local'].includes(method)) {
+    return sendError(res, 400, 'Invalid registration method', null, 'Auth');
+  }
+
+  // Additional validation for local registration
+  if (method === 'local') {
+    validateRequired(req, ['email', 'password']);
+    
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return sendError(res, 400, 'Invalid email format', null, 'Auth');
+    }
+    
+    // Password strength validation
+    if (password.length < 6) {
+      return sendError(res, 400, 'Password must be at least 6 characters long', null, 'Auth');
+    }
+  }
+
+  const requestInfo = getRequestInfo(req);
+  
+  try {
+    const registrationResult = await authService.register(req.body, requestInfo);
+    
+    // If user was approved and logged in immediately
+    if (registrationResult.session) {
+      setAuthCookie(res, registrationResult.session.token);
+      
+      return sendSuccess(res, {
+        user: {
+          userId: registrationResult.user.user_id,
+          username: registrationResult.user.username,
+          email: registrationResult.user.email,
+          isAdmin: !!registrationResult.user.is_admin,
+          authProvider: registrationResult.user.auth_provider
+        },
+        message: registrationResult.message
+      }, 201, 'Auth');
+    }
+    
+    // User registered but needs approval
+    return sendSuccess(res, {
+      message: registrationResult.message,
+      requiresApproval: true
+    }, 201, 'Auth');
+    
+  } catch (error) {
+    if (error.message.includes('already exists')) {
+      return sendError(res, 409, error.message, null, 'Auth');
+    }
+    throw error;
+  }
+}, 'Auth'));
+
+/**
+ * Site password authentication (anonymous access)
+ * Legacy endpoint for backward compatibility
+ */
+router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
+  validateRequired(req, ['password']);
+  
+  const requestInfo = getRequestInfo(req);
+  const authResult = await authService.authenticate({
+    method: 'site_password',
+    password: req.body.password
+  }, requestInfo);
+  
+  if (!authResult) {
+    return sendError(res, 401, 'Invalid site password', null, 'Auth');
+  }
+
+  setAuthCookie(res, authResult.session.token);
+  
+  return sendSuccess(res, {
+    user: {
+      userId: authResult.user.user_id,
+      username: authResult.user.username,
+      isAdmin: false,
+      authProvider: 'anonymous'
+    },
+    message: 'Anonymous access granted'
+  }, 200, 'Auth');
+}, 'Auth'));
+
+/**
+ * Local account login
+ * Legacy endpoint for backward compatibility
+ */
+router.post('/local-login', loginLimiter, asyncHandler(async (req, res) => {
+  validateRequired(req, ['email', 'password']);
+  
+  const requestInfo = getRequestInfo(req);
+  const authResult = await authService.authenticate({
+    method: 'local',
+    email: req.body.email,
+    password: req.body.password
+  }, requestInfo);
+  
+  if (!authResult) {
+    return sendError(res, 401, 'Invalid credentials', null, 'Auth');
+  }
+
+  if (authResult.error) {
+    return sendError(res, 403, authResult.error, { 
+      status: authResult.status 
+    }, 'Auth');
+  }
+
+  setAuthCookie(res, authResult.session.token);
+  
+  return sendSuccess(res, {
+    user: {
+      userId: authResult.user.user_id,
+      username: authResult.user.username,
+      email: authResult.user.email,
+      isAdmin: !!authResult.user.is_admin,
+      authProvider: 'local'
+    },
+    message: 'Login successful'
+  }, 200, 'Auth');
+}, 'Auth'));
+
+/**
+ * Google OAuth authentication
+ */
+router.post('/google', asyncHandler(async (req, res) => {
+  validateRequired(req, ['idToken']);
+  
+  const requestInfo = getRequestInfo(req);
+  const authResult = await authService.authenticate({
+    method: 'google',
+    idToken: req.body.idToken
+  }, requestInfo);
+  
+  if (!authResult) {
+    return sendError(res, 401, 'Google authentication failed', null, 'Auth');
+  }
+
+  if (authResult.error) {
+    return sendError(res, 403, authResult.error, { 
+      status: authResult.status 
+    }, 'Auth');
+  }
+
+  // Handle pending approval
+  if (authResult.message && !authResult.session) {
+    return sendSuccess(res, {
+      message: authResult.message,
+      requiresApproval: true
+    }, 200, 'Auth');
+  }
+
+  setAuthCookie(res, authResult.session.token);
+  
+  return sendSuccess(res, {
+    user: {
+      userId: authResult.user.user_id,
+      username: authResult.user.username,
+      email: authResult.user.email,
+      isAdmin: !!authResult.user.is_admin,
+      authProvider: 'google'
+    },
+    message: 'Google authentication successful'
+  }, 200, 'Auth');
+}, 'Auth'));
+
+// Discord OAuth routes (conditionally loaded)
+if (process.env.DISCORD_BOT_TOKEN && process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET) {
+  /**
+   * Discord OAuth authentication
+   */
+  router.post('/discord', asyncHandler(async (req, res) => {
+    validateRequired(req, ['code', 'redirectUri']);
+    
+    const requestInfo = getRequestInfo(req);
+    const authResult = await authService.authenticate({
+      method: 'discord',
+      code: req.body.code,
+      redirectUri: req.body.redirectUri
+    }, requestInfo);
+    
+    if (!authResult) {
+      return sendError(res, 401, 'Discord authentication failed', null, 'Auth');
+    }
+
+    if (authResult.error) {
+      return sendError(res, 403, authResult.error, { 
+        status: authResult.status 
+      }, 'Auth');
+    }
+
+    // Handle pending approval
+    if (authResult.message && !authResult.session) {
+      return sendSuccess(res, {
+        message: authResult.message,
+        requiresApproval: true
+      }, 200, 'Auth');
+    }
+
+    setAuthCookie(res, authResult.session.token);
+    
+    return sendSuccess(res, {
+      user: {
+        userId: authResult.user.user_id,
+        username: authResult.user.username,
+        email: authResult.user.email,
+        isAdmin: !!authResult.user.is_admin,
+        authProvider: 'discord'
+      },
+      message: 'Discord authentication successful'
+    }, 200, 'Auth');
+  }, 'Auth'));
+
+  /**
+   * Discord OAuth callback (for web flow)
+   */
+  router.get('/discord/callback', asyncHandler(async (req, res) => {
+    const { code, state } = req.query;
+    
+    if (!code) {
+      return sendError(res, 400, 'Authorization code required', null, 'Auth');
+    }
+
+    const redirectUri = `${req.protocol}://${req.get('host')}/api/auth/discord/callback`;
+    const requestInfo = getRequestInfo(req);
+    
+    const authResult = await authService.authenticate({
+      method: 'discord',
+      code,
+      redirectUri
+    }, requestInfo);
+    
+    if (!authResult) {
+      return res.redirect('/login?error=discord_auth_failed');
+    }
+
+    if (authResult.error) {
+      return res.redirect(`/login?error=account_pending&status=${authResult.status}`);
+    }
+
+    // Handle pending approval
+    if (authResult.message && !authResult.session) {
+      return res.redirect('/login?message=account_pending_approval');
+    }
+
+    setAuthCookie(res, authResult.session.token);
+    
+    // Redirect to intended page or home
+    const redirectTo = state ? decodeURIComponent(state) : '/';
+    res.redirect(redirectTo);
+  }, 'Auth'));
 }
 
-// Site password login route
-router.post('/login', loginLimiter, async (req, res) => {
-  const { password } = req.body;
-
-  if (!password) {
-    return res.status(400).json({ error: 'Password is required' });
-  }
-
-  try {
-    // Get request info for auth
-    const requestInfo = {
-      ip: req.ip,
-      userAgent: req.headers['user-agent']
-    };
-    
-    // Authenticate with site password
-    const authResult = await authService.authenticateWithPassword(password, requestInfo);
-    
-    if (!authResult) {
-      logger.warn('Failed login attempt', { ip: req.ip });
-      return res.status(401).json({ error: 'Invalid password' });
-    }
-
-    // Set the token as a cookie
-    res.cookie('auth_token', authResult.session.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: 'strict',
-      path: '/'
-    });
-
-    logger.info('Successful login with site password', { ip: req.ip });
-    res.json({
-      success: true,
-      user: {
-        id: authResult.user.id,
-        username: authResult.user.username,
-        isAnonymous: true
-      }
-    });
-  } catch (error) {
-    logger.error('Login error', { error: error.message });
-    res.status(500).json({ error: 'An error occurred during login' });
-  }
-});
-
-// Local user login route
-router.post('/local-login', loginLimiter, async (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
-  }
-
-  try {
-    // Get request info for auth
-    const requestInfo = {
-      ip: req.ip,
-      userAgent: req.headers['user-agent']
-    };
-    
-    // Authenticate with local credentials
-    const authResult = await authService.authenticateLocal(email, password, requestInfo);
-    
-    if (!authResult) {
-      logger.warn('Failed local login attempt', { email, ip: req.ip });
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    // Set the token as a cookie
-    res.cookie('auth_token', authResult.session.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: 'strict',
-      path: '/'
-    });
-
-    logger.info('Successful local login', { 
-      userId: authResult.user.id,
-      email,
-      ip: req.ip 
-    });
-    
-    res.json({
-      success: true,
-      user: {
-        id: authResult.user.id,
-        username: authResult.user.username,
-        email: authResult.user.email
-      }
-    });
-  } catch (error) {
-    logger.error('Local login error', { error: error.message });
-    res.status(500).json({ error: 'An error occurred during login' });
-  }
-});
-
-// User registration route
-router.post('/register', loginLimiter, async (req, res) => {
-  const { username, email, password } = req.body;
-
-  if (!username || !email || !password) {
-    return res.status(400).json({ error: 'Username, email, and password are required' });
-  }
-
-  try {
-    // Check if user already exists
-    const existingUser = await userModel.getUserByEmail(email);
-    
-    if (existingUser) {
-      return res.status(409).json({ error: 'User with this email already exists' });
-    }
-    
-    // Create new user
-    const user = await userModel.createUser({
-      username,
-      email,
-      auth_provider: 'local',
-      auth_id: email,
-      password
-    });
-
-    // Get request info for auth
-    const requestInfo = {
-      ip: req.ip,
-      userAgent: req.headers['user-agent']
-    };
-    
-    // Create session for new user
-    const session = await authService.createSession(user.id, requestInfo);
-
-    // Set auth token cookie
-    res.cookie('auth_token', session.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: 'strict',
-      path: '/'
-    });
-
-    logger.info('New user registered', { 
-      userId: user.id,
-      username,
-      email,
-      ip: req.ip 
-    });
-    
-    res.json({
-      success: true,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email
-      }
-    });
-  } catch (error) {
-    logger.error('Registration error', { error: error.message });
-    res.status(500).json({ error: 'An error occurred during registration' });
-  }
-});
-
-// Admin login route
-router.post('/admin-login', loginLimiter, async (req, res) => {
-  const { password } = req.body;
-
-  if (!password) {
-    return res.status(400).json({ error: 'Password is required' });
-  }
-
-  try {
-    // Verify admin password
-    const adminPassword = process.env.ADMIN_PASSWORD || 'admin';
-    
-    if (password !== adminPassword) {
-      logger.warn('Failed admin login attempt', { ip: req.ip });
-      return res.status(401).json({ error: 'Invalid admin password' });
-    }
-
-    // Create admin user if not exists
-    let adminUser = await userModel.getUserByAuthId('admin', 'admin');
-    
-    if (!adminUser) {
-      adminUser = await userModel.createUser({
-        username: 'Admin',
-        auth_provider: 'admin',
-        auth_id: 'admin',
-        is_admin: true
-      });
-    }
-    
-    // Get request info for auth
-    const requestInfo = {
-      ip: req.ip,
-      userAgent: req.headers['user-agent']
-    };
-    
-    // Create session for admin
-    const session = await authService.createSession(adminUser.id, requestInfo);
-
-    // Set admin token cookie
-    res.cookie('admin_token', session.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: 'strict',
-      path: '/'
-    });
-
-    logger.info('Successful admin login', { ip: req.ip });
-    res.json({ success: true });
-  } catch (error) {
-    logger.error('Admin login error', { error: error.message });
-    res.status(500).json({ error: 'An error occurred during admin login' });
-  }
-});
-
-// Google OAuth login
-router.post('/google', async (req, res) => {
-  const { idToken } = req.body;
+/**
+ * Admin authentication
+ */
+router.post('/admin-login', loginLimiter, asyncHandler(async (req, res) => {
+  validateRequired(req, ['password']);
   
-  if (!idToken) {
-    return res.status(400).json({ error: 'ID Token is required' });
-  }
+  const { password } = req.body;
+  const adminPassword = process.env.ADMIN_PASSWORD || 'admin';
   
-  try {
-    // Get request info for auth
-    const requestInfo = {
-      ip: req.ip,
-      userAgent: req.headers['user-agent']
-    };
-    
-    // Authenticate with Google
-    const authResult = await authService.authenticateGoogle(idToken, requestInfo);
-    
-    if (!authResult) {
-      return res.status(401).json({ error: 'Invalid Google authentication' });
-    }
-    
-    // Set the token as a cookie
-    res.cookie('auth_token', authResult.session.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: 'strict',
-      path: '/'
+  if (password !== adminPassword) {
+    logger.auth.warn('Failed admin login attempt', { 
+      ip: getRequestInfo(req).ip 
     });
-    
-    logger.info('Successful Google login', { 
-      userId: authResult.user.id,
-      email: authResult.user.email,
-      ip: req.ip 
-    });
-    
-    res.json({
-      success: true,
-      user: {
-        id: authResult.user.id,
-        username: authResult.user.username,
-        email: authResult.user.email
-      }
-    });
-  } catch (error) {
-    logger.error('Google authentication error', { error: error.message });
-    res.status(500).json({ error: 'An error occurred during Google authentication' });
+    return sendError(res, 401, 'Invalid admin password', null, 'Auth');
   }
-});
 
-// User info endpoint
-router.get('/user', async (req, res) => {
-  try {
-    // User is already authenticated via middleware
-    if (!req.user) {
-      return res.status(401).json({ error: 'Not authenticated' });
-    }
-    
-    res.json({
-      id: req.user.id,
-      username: req.user.username,
-      email: req.user.email,
-      isAdmin: req.isAdmin
-    });
-  } catch (error) {
-    logger.error('User info error', { error: error.message });
-    res.status(500).json({ error: 'An error occurred getting user info' });
-  }
-});
+  // Create admin session token
+  const sessionToken = require('crypto').randomBytes(32).toString('hex');
+  
+  // Set admin cookie
+  res.cookie('admin_token', sessionToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  });
 
-// Auth status endpoint - check if user is authenticated
-router.get('/status', async (req, res) => {
-  try {
-    const token = req.cookies?.auth_token;
-    const adminToken = req.cookies?.admin_token;
-    
-    // Check if we have any valid token
-    if (!token && !adminToken) {
-      return res.status(401).json({ 
-        authenticated: false, 
-        error: 'No authentication token found' 
-      });
-    }
-    
-    // Verify the token using auth service
-    const authService = require('../services/authService');
-    let user = null;
-    let isAdmin = false;
-    
-    // Try user token first
-    if (token) {
-      user = await authService.verifySession(token);
-    }
-    
-    // Try admin token if user token failed
-    if (!user && adminToken) {
-      user = await authService.verifySession(adminToken);
-      if (user && user.is_admin) {
-        isAdmin = true;
-      }
-    }
-    
-    if (!user) {
-      // Clear invalid cookies
-      if (token) {
-        res.clearCookie('auth_token', {
-          path: '/',
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict'
-        });
-      }
-      if (adminToken) {
-        res.clearCookie('admin_token', {
-          path: '/',
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict'
-        });
-      }
-      
-      return res.status(401).json({ 
-        authenticated: false, 
-        error: 'Invalid authentication token' 
-      });
-    }
-    
-    // Check user approval status
-    const userModel = require('../models/userModel');
-    const approvalStatus = await userModel.getUserApprovalStatus(user.id);
-    
-    res.json({
-      authenticated: true,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        isAdmin: isAdmin || user.is_admin === 1,
-        approvalStatus: approvalStatus
-      }
-    });
-  } catch (error) {
-    logger.error('Auth status error', { error: error.message });
-    res.status(500).json({ 
-      authenticated: false, 
-      error: 'An error occurred checking authentication status' 
-    });
-  }
-});
+  logger.auth.info('Admin login successful', { 
+    ip: getRequestInfo(req).ip 
+  });
 
-// Logout routes
-router.post('/logout', async (req, res) => {
+  return sendSuccess(res, {
+    message: 'Admin authentication successful',
+    isAdmin: true
+  }, 200, 'Auth');
+}, 'Auth'));
+
+/**
+ * Get authentication status
+ */
+router.get('/status', asyncHandler(async (req, res) => {
   const token = req.cookies?.auth_token;
-  const adminToken = req.cookies?.admin_token;
   
-  try {
-    // Logout both user and admin sessions
+  if (!token) {
+    return sendSuccess(res, {
+      authenticated: false,
+      user: null
+    }, 200, 'Auth');
+  }
+
+  const user = await authService.verifySession(token);
+  
+  if (!user) {
+    clearAuthCookie(res);
+    return sendSuccess(res, {
+      authenticated: false,
+      user: null
+    }, 200, 'Auth');
+  }
+
+  return sendSuccess(res, {
+    authenticated: true,
+    user: {
+      userId: user.user_id,
+      username: user.username,
+      email: user.email,
+      isAdmin: !!user.is_admin,
+      authProvider: user.auth_provider,
+      approvalStatus: user.approval_status
+    }
+  }, 200, 'Auth');
+}, 'Auth'));
+
+/**
+ * Logout
+ */
+router.post('/logout', asyncHandler(async (req, res) => {
+  const token = req.cookies?.auth_token;
+  
     if (token) {
       await authService.logout(token);
-      res.clearCookie('auth_token', {
-        path: '/',
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict'
-      });
-    }
-    
-    if (adminToken) {
-      await authService.logout(adminToken);
-      res.clearCookie('admin_token', {
-        path: '/',
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict'
-      });
-    }
-    
-    // Clear session
-    if (req.session) {
-      req.session.destroy();
-    }
-    
-    logger.info('User logged out', { ip: req.ip });
-    res.json({ success: true });
-  } catch (error) {
-    logger.error('Logout error', { error: error.message });
-    res.status(500).json({ error: 'An error occurred during logout' });
   }
-});
-
-// Also support GET logout for direct browser access
-router.get('/logout', async (req, res) => {
-  const token = req.cookies?.auth_token;
-  const adminToken = req.cookies?.admin_token;
   
-  try {
-    // Logout both user and admin sessions
-    if (token) {
-      await authService.logout(token);
-      res.clearCookie('auth_token', {
-        path: '/',
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict'
-      });
-    }
-    
-    if (adminToken) {
-      await authService.logout(adminToken);
-      res.clearCookie('admin_token', {
-        path: '/',
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict'
-      });
-    }
-    
-    // Clear session
-    if (req.session) {
-      req.session.destroy();
-    }
-    
-    logger.info('User logged out via GET', { ip: req.ip });
-    
-    // Redirect to login page
-    res.redirect('/login.html');
-  } catch (error) {
-    logger.error('Logout error', { error: error.message });
-    res.redirect('/login.html');
-  }
-});
+  clearAuthCookie(res);
+  
+  // Also clear admin token if present
+  res.clearCookie('admin_token');
+  
+  logger.auth.info('User logged out', { 
+    ip: getRequestInfo(req).ip 
+  });
 
-// Export the router
-module.exports = router;
+  return sendSuccess(res, {
+    message: 'Logged out successfully'
+  }, 200, 'Auth');
+}, 'Auth'));
 
-// Configuration endpoint for frontend
-router.get('/config', (req, res) => {
-  try {
-    res.json({
-      googleClientId: process.env.GOOGLE_CLIENT_ID || null,
-      discordEnabled: isDiscordEnabled(),
-      offlineMode: process.env.OFFLINE_MODE === 'true'
-    });
-  } catch (error) {
-    logger.error('Auth config error', { error: error.message });
-    res.status(500).json({ error: 'Failed to get auth configuration' });
+/**
+ * Get authentication configuration
+ */
+router.get('/config', asyncHandler(async (req, res) => {
+  const config = {
+    methods: ['site_password', 'local'],
+    registration: {
+      enabled: true,
+      requiresApproval: true
+    }
+  };
+
+  // Add Google OAuth if configured
+  if (process.env.GOOGLE_CLIENT_ID) {
+    config.methods.push('google');
+    config.google = {
+      clientId: process.env.GOOGLE_CLIENT_ID
+    };
   }
-}); 
+
+  // Add Discord OAuth if configured
+  if (process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET) {
+    config.methods.push('discord');
+    config.discord = {
+      clientId: process.env.DISCORD_CLIENT_ID,
+      redirectUri: `${req.protocol}://${req.get('host')}/api/auth/discord/callback`
+    };
+  }
+
+  return sendSuccess(res, config, 200, 'Auth');
+}, 'Auth'));
+
+module.exports = router; 

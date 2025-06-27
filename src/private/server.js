@@ -17,6 +17,7 @@ const userRoutes = require('./routes/users');
 const notificationRoutes = require('./routes/notifications');
 const adminRoutes = require('./routes/admin/users');
 const chatRoutes = require('./routes/chat');
+const imageRoutes = require('./routes/images');
 const websocketServer = require('./websocket');
 const configLoader = require('./utils/configLoader');
 const startupChecks = require('./utils/startupChecks');
@@ -56,28 +57,28 @@ class Server {
         try {
             // Check if we're in offline mode
             if (process.env.OFFLINE_MODE === 'true') {
-                logger.info('Discord disabled: Offline mode enabled');
+                logger.discord.info('Discord disabled: Offline mode enabled');
                 this.discordEnabled = false;
                 return;
             }
 
             // Check if Discord bot token is provided
             if (!process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN.trim() === '') {
-                logger.info('Discord disabled: No bot token provided');
+                logger.discord.info('Discord disabled: No bot token provided');
                 this.discordEnabled = false;
                 return;
             }
 
             // Check if Discord client credentials are provided
             if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) {
-                logger.warn('Discord OAuth disabled: Missing client credentials');
+                logger.discord.warn('Discord OAuth disabled: Missing client credentials');
                 // Bot can still work without OAuth
             }
 
             this.discordEnabled = true;
-            logger.info('Discord enabled');
+            logger.discord.info('Discord enabled');
         } catch (error) {
-            logger.error('Error checking Discord availability', {
+            logger.discord.error('Error checking Discord availability', {
                 error: error.message
             });
             this.discordEnabled = false;
@@ -129,8 +130,17 @@ class Server {
             }
         }));
 
-        // Static files
-        this.app.use(express.static('src/public'));
+        // Static files - serve React build in production, keep public assets
+        if (process.env.NODE_ENV === 'production') {
+            // In production, serve the React build
+            this.app.use(express.static('frontend/dist'));
+            // Also serve remaining public assets (images, manifest)
+            this.app.use('/assets', express.static('src/public'));
+        } else {
+            // In development, serve remaining public assets and let React dev server handle the frontend
+            this.app.use('/assets', express.static('src/public'));
+            // Note: React dev server runs on port 3001 and proxies API calls to this server
+        }
     }
 
     setupRoutes() {
@@ -138,7 +148,7 @@ class Server {
         this.app.use((req, res, next) => {
             const start = Date.now();
             res.on('finish', () => {
-                logger.debug('Request completed', {
+                logger.api.debug('Request completed', {
                     method: req.method,
                     path: req.path,
                     status: res.statusCode,
@@ -171,10 +181,18 @@ class Server {
         
         // Chat routes
         this.app.use('/api/chat', chatRoutes);
+        
+        // Image routes
+        this.app.use('/api/images', imageRoutes);
 
-        // Board routes with new URL structure
+        // Board routes with new URL structure - serve React app
         this.app.get('/boards', isAuthenticated, (req, res) => {
-            res.sendFile('boards.html', { root: 'src/public' });
+            if (process.env.NODE_ENV === 'production') {
+                res.sendFile('index.html', { root: 'frontend/dist' });
+            } else {
+                // In development, redirect to React dev server
+                res.redirect('http://localhost:3001/boards');
+            }
         });
 
         // Anonymous board routes: /anonymous/:slug
@@ -194,7 +212,7 @@ class Server {
                     next();
                 }
             } catch (error) {
-                logger.error('Error checking anonymous board existence', {
+                logger.board.error('Error checking anonymous board existence', {
                     error: error.message,
                     slug
                 });
@@ -224,7 +242,7 @@ class Server {
                     next();
                 }
             } catch (error) {
-                logger.error('Error checking board existence', {
+                logger.board.error('Error checking board existence', {
                     error: error.message,
                     username,
                     slug
@@ -235,13 +253,20 @@ class Server {
 
         // Legacy board route redirect
         this.app.get('/board/:boardId', isAuthenticated, (req, res) => {
-            // For now, redirect to the old board.html until we can determine the username
-            res.sendFile('board.html', { root: 'src/public' });
+            if (process.env.NODE_ENV === 'production') {
+                res.sendFile('index.html', { root: 'frontend/dist' });
+            } else {
+                res.redirect(`http://localhost:3001/board/${req.params.boardId}`);
+            }
         });
 
         // Home page - require authentication
         this.app.get('/', isAuthenticated, (req, res) => {
-            res.sendFile('index.html', { root: 'src/public' });
+            if (process.env.NODE_ENV === 'production') {
+                res.sendFile('index.html', { root: 'frontend/dist' });
+            } else {
+                res.redirect('http://localhost:3001/');
+            }
         });
 
         // Admin page
@@ -249,7 +274,20 @@ class Server {
             if (!req.user.is_admin) {
                 return res.status(403).send('Access denied');
             }
-            res.sendFile('admin.html', { root: 'src/public' });
+            if (process.env.NODE_ENV === 'production') {
+                res.sendFile('index.html', { root: 'frontend/dist' });
+            } else {
+                res.redirect('http://localhost:3001/admin');
+            }
+        });
+
+        // Login route - serve React app (no auth required)
+        this.app.get('/login', (req, res) => {
+            if (process.env.NODE_ENV === 'production') {
+                res.sendFile('index.html', { root: 'frontend/dist' });
+            } else {
+                res.redirect('http://localhost:3001/login');
+            }
         });
 
         // Version endpoint
@@ -268,12 +306,27 @@ class Server {
                 uptime: process.uptime()
             });
         });
+
+        // Catch-all route for React SPA - must be last route
+        this.app.get('*', (req, res) => {
+            // Skip API routes and static files
+            if (req.path.startsWith('/api/') || req.path.includes('.')) {
+                return res.status(404).json({ error: 'Not Found' });
+            }
+            
+            if (process.env.NODE_ENV === 'production') {
+                res.sendFile('index.html', { root: 'frontend/dist' });
+            } else {
+                // In development, redirect to React dev server
+                res.redirect(`http://localhost:3001${req.path}`);
+            }
+        });
     }
 
     setupErrorHandling() {
         // 404 handler
         this.app.use((req, res) => {
-            logger.warn('404 Not Found', {
+            logger.api.warn('404 Not Found', {
                 method: req.method,
                 path: req.path,
                 ip: req.ip
@@ -283,7 +336,7 @@ class Server {
 
         // Global error handler
         this.app.use((err, req, res, next) => {
-            logger.error('Unhandled error', {
+            logger.api.error('Unhandled error', {
                 error: err.message,
                 stack: err.stack,
                 method: req.method,

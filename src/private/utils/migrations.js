@@ -7,71 +7,141 @@ const boardModel = require('../models/boardModel');
 const constants = require('../config/constants');
 const SlugGenerator = require('./slugGenerator');
 const configLoader = require('./configLoader');
+const crypto = require('crypto');
 
 // Boards directory path
 const BOARDS_DIR = constants.BOARDS_DIR;
 
-class Migrations {
-  constructor() {
-    this.migrations = [
-      {
-        version: 1,
-        name: 'add_slug_to_boards',
-        description: 'Add slug field to boards table and populate for existing boards',
-        up: this.addSlugToBoards.bind(this)
-      }
-    ];
+class MigrationManager {
+  constructor(database) {
+    this.db = database;
   }
 
   /**
-   * Run all pending migrations
+   * Generate a random 8-character user ID
+   * @returns {string} - Random user ID
    */
-  async runMigrations() {
+  generateUserId() {
+    // Use crypto.randomBytes for cryptographically secure random generation
+    // Convert to base36 (0-9, a-z) for readability
+    const buffer = crypto.randomBytes(6); // 6 bytes = 48 bits
+    return buffer.toString('base64')
+      .replace(/[+/=]/g, '') // Remove special chars
+      .substring(0, 8)
+      .toLowerCase();
+  }
+
+  /**
+   * Check if user ID already exists
+   * @param {string} userId - User ID to check
+   * @returns {boolean} - True if exists
+   */
+  async userIdExists(userId) {
     try {
-      const db = database.getDb();
+      const db = this.db.getDb();
+      const result = await db.get('SELECT user_id FROM users WHERE user_id = ?', [userId]);
+      return !!result;
+    } catch (error) {
+      logger.database.error('Error checking user ID existence', { error: error.message });
+      return false;
+    }
+  }
+
+  /**
+   * Generate a unique user ID
+   * @returns {string} - Unique user ID
+   */
+  async generateUniqueUserId() {
+    let userId;
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    do {
+      userId = this.generateUserId();
+      attempts++;
       
-      // Create migrations table if it doesn't exist
+      if (attempts > maxAttempts) {
+        throw new Error('Failed to generate unique user ID after maximum attempts');
+      }
+    } while (await this.userIdExists(userId));
+
+    return userId;
+  }
+
+  /**
+   * Migration: Add user_id column and populate with random IDs
+   */
+  async migrateToRandomUserIds() {
+    try {
+      const db = this.db.getDb();
+      
+      logger.database.info('Starting user ID migration...');
+      
+      // Check if migration already completed
+      const columns = await db.all("PRAGMA table_info(users)");
+      const hasUserId = columns.some(col => col.name === 'user_id');
+      
+      if (hasUserId) {
+        logger.database.info('User ID migration already completed');
+        return;
+      }
+
+      // Add user_id column
+      await db.exec('ALTER TABLE users ADD COLUMN user_id TEXT UNIQUE');
+      
+      // Get all existing users
+      const users = await db.all('SELECT id FROM users');
+      
+      logger.database.info(`Migrating ${users.length} users to random IDs`);
+
+      // Generate random IDs for existing users
+      for (const user of users) {
+        const randomUserId = await this.generateUniqueUserId();
+        await db.run('UPDATE users SET user_id = ? WHERE id = ?', [randomUserId, user.id]);
+        
+        logger.database.debug('Migrated user', { 
+          oldId: user.id, 
+          newUserId: randomUserId 
+        });
+      }
+
+      // Make user_id NOT NULL after populating
       await db.exec(`
-        CREATE TABLE IF NOT EXISTS migrations (
+        CREATE TABLE users_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          version INTEGER UNIQUE NOT NULL,
-          name TEXT NOT NULL,
-          description TEXT,
-          applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          user_id TEXT UNIQUE NOT NULL,
+          username TEXT NOT NULL,
+          email TEXT UNIQUE,
+          auth_provider TEXT, 
+          auth_id TEXT,
+          password_hash TEXT,
+          password_salt TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          last_login TIMESTAMP,
+          is_admin BOOLEAN DEFAULT 0,
+          approval_status TEXT DEFAULT 'pending',
+          discord_guild_id TEXT,
+          UNIQUE(auth_provider, auth_id)
         )
       `);
 
-      // Get applied migrations
-      const appliedMigrations = await db.all('SELECT version FROM migrations ORDER BY version');
-      const appliedVersions = appliedMigrations.map(m => m.version);
+      // Copy data to new table
+      await db.exec(`
+        INSERT INTO users_new 
+        SELECT id, user_id, username, email, auth_provider, auth_id, 
+               password_hash, password_salt, created_at, last_login, 
+               is_admin, approval_status, discord_guild_id
+        FROM users
+      `);
 
-      // Run pending migrations
-      for (const migration of this.migrations) {
-        if (!appliedVersions.includes(migration.version)) {
-          logger.info('Running migration', {
-            version: migration.version,
-            name: migration.name,
-            description: migration.description
-          });
+      // Replace old table
+      await db.exec('DROP TABLE users');
+      await db.exec('ALTER TABLE users_new RENAME TO users');
 
-          await migration.up();
-
-          // Record migration as applied
-          await db.run(`
-            INSERT INTO migrations (version, name, description)
-            VALUES (?, ?, ?)
-          `, [migration.version, migration.name, migration.description]);
-
-          logger.info('Migration completed successfully', {
-            version: migration.version,
-            name: migration.name
-          });
-        }
-      }
-
-      logger.info('All migrations completed');
+      logger.database.info('User ID migration completed successfully');
+      
     } catch (error) {
-      logger.error('Migration failed', {
+      logger.database.error('User ID migration failed', { 
         error: error.message,
         stack: error.stack
       });
@@ -80,161 +150,23 @@ class Migrations {
   }
 
   /**
-   * Migration 1: Add slug field to boards table
+   * Run all pending migrations
    */
-  async addSlugToBoards() {
-    const db = database.getDb();
-    
-    return await database.transaction(async (db) => {
-      // Check if slug column already exists
-      const tableInfo = await db.all("PRAGMA table_info(boards)");
-      const hasSlugColumn = tableInfo.some(column => column.name === 'slug');
-      
-      if (!hasSlugColumn) {
-        // Add slug column
-        await db.exec('ALTER TABLE boards ADD COLUMN slug TEXT');
-        logger.info('Added slug column to boards table');
-      }
-
-      // Get all boards without slugs
-      const boardsWithoutSlugs = await db.all(`
-        SELECT id, uuid, title, created_by FROM boards 
-        WHERE slug IS NULL OR slug = ''
-      `);
-
-      if (boardsWithoutSlugs.length > 0) {
-        logger.info('Generating slugs for existing boards', {
-          count: boardsWithoutSlugs.length
-        });
-
-        // Get server username from config
-        const config = configLoader.loadConfig();
-        const serverUsername = config.site?.serverUsername || 'server';
-
-        for (const board of boardsWithoutSlugs) {
+  async runMigrations() {
           try {
-            // Check if this is a server board (no created_by or created_by is null)
-            const isServerBoard = !board.created_by;
-            
-            let slug;
-            if (isServerBoard) {
-              // Generate server slug
-              slug = SlugGenerator.generateServerSlug(board.title, serverUsername);
-            } else {
-              // Generate regular slug
-              slug = SlugGenerator.generateSlug(board.title);
-            }
-
-            // Ensure slug is unique for this user
-            const checkSlugExists = async (testSlug) => {
-              const existing = await db.get(`
-                SELECT id FROM boards 
-                WHERE slug = ? AND created_by = ? AND id != ?
-              `, [testSlug, board.created_by, board.id]);
-              return !!existing;
-            };
-
-            // Generate unique slug
-            const uniqueSlug = await SlugGenerator.generateUniqueSlug(
-              board.title, 
-              checkSlugExists
-            );
-
-            // Update board with slug
-            await db.run(`
-              UPDATE boards SET slug = ? WHERE id = ?
-            `, [uniqueSlug, board.id]);
-
-            logger.debug('Generated slug for board', {
-              boardId: board.id,
-              title: board.title,
-              slug: uniqueSlug,
-              isServerBoard
-            });
-          } catch (error) {
-            logger.error('Failed to generate slug for board', {
-              boardId: board.id,
-              title: board.title,
-              error: error.message
-            });
-            
-            // Use fallback slug
-            const fallbackSlug = `board-${board.id}`;
-            await db.run(`
-              UPDATE boards SET slug = ? WHERE id = ?
-            `, [fallbackSlug, board.id]);
-          }
-        }
-      }
-
-      // Add unique constraint for user-slug combination
-      try {
-        // First check if the index already exists
-        const indexes = await db.all(`
-          SELECT name FROM sqlite_master 
-          WHERE type='index' AND tbl_name='boards' AND name='idx_boards_user_slug'
-        `);
-
-        if (indexes.length === 0) {
-          await db.exec(`
-            CREATE UNIQUE INDEX idx_boards_user_slug 
-            ON boards(created_by, slug)
-          `);
-          logger.info('Created unique index for user-slug combination');
-        }
-      } catch (error) {
-        // Index might already exist or there might be duplicate slugs
-        logger.warn('Could not create unique index for user-slug combination', {
-          error: error.message
-        });
-      }
-    });
-  }
-
-  /**
-   * Get migration status
-   */
-  async getMigrationStatus() {
-    try {
-      const db = database.getDb();
+      logger.database.info('Running database migrations...');
       
-      // Check if migrations table exists
-      const tableExists = await db.get(`
-        SELECT name FROM sqlite_master 
-        WHERE type='table' AND name='migrations'
-      `);
-
-      if (!tableExists) {
-        return {
-          migrationsTableExists: false,
-          appliedMigrations: [],
-          pendingMigrations: this.migrations
-        };
-      }
-
-      const appliedMigrations = await db.all(`
-        SELECT version, name, description, applied_at 
-        FROM migrations 
-        ORDER BY version
-      `);
-
-      const appliedVersions = appliedMigrations.map(m => m.version);
-      const pendingMigrations = this.migrations.filter(m => 
-        !appliedVersions.includes(m.version)
-      );
-
-      return {
-        migrationsTableExists: true,
-        appliedMigrations,
-        pendingMigrations
-      };
+      await this.migrateToRandomUserIds();
+      
+      logger.database.info('All migrations completed successfully');
     } catch (error) {
-      logger.error('Failed to get migration status', {
-        error: error.message
+      logger.database.error('Migration failed', { 
+        error: error.message,
+        stack: error.stack 
       });
       throw error;
     }
   }
 }
 
-module.exports = new Migrations(); 
+module.exports = MigrationManager; 

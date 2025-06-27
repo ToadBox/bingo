@@ -2,194 +2,101 @@ const logger = require('../utils/logger');
 const constants = require('../config/constants');
 const authService = require('../services/authService');
 const userModel = require('../models/userModel');
+const {
+  shouldSkipAuth,
+  requiresAdminAuth,
+  getAllowedPendingRoutes,
+  handleAuthFailure,
+  handleAccessDenied,
+  logSuccessfulAuth,
+  getRequestInfo
+} = require('../utils/authHelpers');
 
 // Function to check if the user is authenticated
 const isAuthenticated = async (req, res, next) => {
   const token = req.cookies?.auth_token;
   const adminToken = req.cookies?.admin_token;
+  const path = req.path;
   
   // Log all requests with cookie info
-  logger.debug('Authentication check', { 
-    path: req.path, 
+  logger.auth.debug('Authentication check', { 
+    path,
     hasToken: !!token,
     hasAdminToken: !!adminToken,
     method: req.method,
     cookies: Object.keys(req.cookies || {})
   });
   
-  // Skip authentication for API endpoints that should always be accessible
-  if (req.path === '/api/auth/login' || 
-      req.path === '/api/auth/local-login' ||
-      req.path === '/api/auth/google' ||
-      req.path === '/api/auth/discord' ||
-      req.path === '/api/auth/discord/callback' ||
-      req.path === '/api/auth/register' ||
-      req.path === '/api/auth/admin-login' || 
-      req.path === '/api/auth/status' ||
-      req.path === '/api/auth/logout' ||
-      req.path === '/api/auth/config' ||
-      req.path === '/api/health' ||
-      req.path === '/api/version') {
-    logger.debug('Skipping auth for exempt API path', { path: req.path });
-    return next();
-  }
-
-  // Skip authentication for all public assets and login pages
-  if (req.path === constants.LOGIN_PAGE || 
-      req.path === '/login' ||
-      req.path === '/admin-login.html' ||
-      req.path === '/pending-approval.html' ||
-      req.path === '/css/login.css' || 
-      req.path === '/css/common.css' ||
-      req.path.startsWith('/css/') ||
-      req.path.startsWith('/js/') ||
-      req.path.startsWith('/images/') ||
-      req.path.startsWith('/fonts/') ||
-      req.path.includes('login')) {
-    logger.debug('Skipping auth for public assets', { path: req.path });
+  // Skip authentication for exempt paths
+  if (shouldSkipAuth(path)) {
+    logger.auth.debug('Skipping auth for exempt path', { path });
     return next();
   }
   
-  // Admin-specific routes and API endpoints require admin authentication
-  if (req.path === '/admin' || 
-      req.path === '/admin.html' ||
-      req.path.startsWith('/api/admin/') || 
-      req.path.startsWith('/api/site/')) {
-    
-    // If no admin token, redirect or return error
+  // Admin-specific routes require admin authentication
+  if (requiresAdminAuth(path)) {
     if (!adminToken) {
-      logger.debug('No admin token found for admin route', { path: req.path });
-      if (!req.path.startsWith('/api/')) {
-        return res.redirect('/admin-login.html');
-      }
-      return res.status(403).json({ error: 'Admin authentication required' });
+      logger.auth.debug('No admin token found for admin route', { path });
+      return handleAuthFailure(res, path, 'Admin authentication required', 'admin');
     }
     
-    // Verify admin token (using auth service)
+    // Verify admin token
     const adminUser = await authService.verifySession(adminToken);
     
     if (!adminUser || !adminUser.is_admin) {
-      logger.warn('Invalid admin token or non-admin user', { path: req.path });
-      
-      // Clear invalid admin token
-      res.clearCookie('admin_token', {
-        path: '/',
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict'
-      });
-      
-      if (!req.path.startsWith('/api/')) {
-        return res.redirect('/admin-login.html');
-      }
-      return res.status(403).json({ error: 'Admin authentication required' });
+      return handleAuthFailure(res, path, 'Invalid admin token or non-admin user', 'admin');
     }
     
-    // Store admin user in request for use in routes
+    // Store admin user in request
     req.user = adminUser;
     req.isAdmin = true;
     
-    logger.debug('Admin authenticated', { 
-      path: req.path,
-      userId: adminUser.id,
-      username: adminUser.username
-    });
-    
+    logSuccessfulAuth(adminUser, path, 'admin');
     return next();
   }
   
-  // Routes that pending users can access
-  const allowPendingRoutes = [
-    '/api/auth/logout',
-    '/api/auth/user',
-    '/api/users/profile',
-    '/pending-approval.html',
-    '/api/notifications'
-  ];
-  
-  // Regular site authentication for non-admin routes
+  // Regular site authentication
   if (!token) {
-    logger.debug('No auth token found, redirecting', { path: req.path });
-    
-    // Only redirect HTML requests, return 401 for API requests
-    if (req.path.startsWith('/api/')) {
-      return res.status(401).json({ error: 'Authentication required' });
-    } else {
-      // Set a flag in session to prevent redirect loops
-      if (req.session) {
-        req.session.redirected = true;
-      }
-      return res.redirect(constants.LOGIN_PAGE);
-    }
+    logger.auth.debug('No auth token found, redirecting', { path });
+    return handleAuthFailure(res, path);
   }
   
-  // Verify user token (using auth service)
+  // Verify user token
   const user = await authService.verifySession(token);
   
   if (!user) {
-    logger.warn('Invalid auth token', { path: req.path });
-    
-    // Clear invalid token
-    res.clearCookie('auth_token', {
-      path: '/',
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict'
-    });
-    
-    if (req.path.startsWith('/api/')) {
-      return res.status(401).json({ error: 'Authentication required' });
-    } else {
-      return res.redirect(constants.LOGIN_PAGE);
-    }
+    return handleAuthFailure(res, path, 'Invalid auth token');
   }
   
   // Check user approval status
   const approvalStatus = await userModel.getUserApprovalStatus(user.id);
   
-  // Store user in request for use in routes
+  // Store user in request
   req.user = user;
   req.isAdmin = user.is_admin === 1;
   req.approvalStatus = approvalStatus;
   
-  // If user is not approved and trying to access a restricted route
-  if (approvalStatus === 'pending' && !allowPendingRoutes.some(route => req.path.startsWith(route))) {
-    logger.info('Unapproved user attempting to access restricted resource', {
+  // Check if user can access the route based on approval status
+  const allowPendingRoutes = getAllowedPendingRoutes();
+  
+  if (approvalStatus === 'pending' && !allowPendingRoutes.some(route => path.startsWith(route))) {
+    logger.auth.info('Unapproved user attempting to access restricted resource', {
       userId: user.id,
       username: user.username,
-      path: req.path
+      path
     });
     
-    if (req.path.startsWith('/api/')) {
-      return res.status(403).json({ 
-        error: 'Account approval required', 
+    return handleAccessDenied(res, path, 'Account approval required', {
         approvalStatus,
         redirectTo: '/pending-approval.html'
       });
-    } else {
-      return res.redirect('/pending-approval.html');
-    }
   }
   
-  // If user is rejected
   if (approvalStatus === 'rejected') {
-    if (req.path.startsWith('/api/')) {
-      return res.status(403).json({ 
-        error: 'Account has been rejected', 
-        approvalStatus 
-      });
-    } else {
-      return res.redirect('/account-rejected.html');
-    }
+    return handleAccessDenied(res, path, 'Account has been rejected', { approvalStatus });
   }
   
-  logger.debug('User authenticated', { 
-    path: req.path,
-    userId: user.id,
-    username: user.username,
-    approvalStatus
-  });
-  
+  logSuccessfulAuth(user, path, 'user');
   next();
 };
 

@@ -11,14 +11,66 @@ class UserModel {
   }
 
   /**
+   * Generate a random 8-character user ID
+   * @returns {string} - Random user ID
+   */
+  generateUserId() {
+    const buffer = crypto.randomBytes(6);
+    return buffer.toString('base64')
+      .replace(/[+/=]/g, '')
+      .substring(0, 8)
+      .toLowerCase();
+  }
+
+  /**
+   * Generate a unique user ID
+   * @returns {string} - Unique user ID
+   */
+  async generateUniqueUserId() {
+    let userId;
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    do {
+      userId = this.generateUserId();
+      attempts++;
+      
+      if (attempts > maxAttempts) {
+        throw new Error('Failed to generate unique user ID after maximum attempts');
+      }
+    } while (await this.userIdExists(userId));
+
+    return userId;
+  }
+
+  /**
+   * Check if user ID already exists
+   * @param {string} userId - User ID to check
+   * @returns {boolean} - True if exists
+   */
+  async userIdExists(userId) {
+    try {
+      const db = database.getDb();
+      const result = await db.get('SELECT user_id FROM users WHERE user_id = ?', [userId]);
+      return !!result;
+    } catch (error) {
+      logger.user.error('Error checking user ID existence', { error: error.message });
+      return false;
+    }
+  }
+
+  /**
    * Create a new user
    * @param {Object} userData - User data object
    * @returns {Object} - Created user
    */
   async createUser(userData) {
-    const { username, email, auth_provider, auth_id, password, discord_guild_id } = userData;
+    const { username, email, auth_provider, auth_id, password, discord_guild_id, approval_status } = userData;
     let passwordHash = null;
     let passwordSalt = null;
+
+    // Generate unique user ID
+    const userId = await this.generateUniqueUserId();
 
     // If local auth, hash the password
     if (auth_provider === 'local' && password) {
@@ -27,24 +79,24 @@ class UserModel {
       passwordHash = this.hashPassword(password, passwordSalt);
     }
     
-    // Determine approval status
-    let approvalStatus = 'pending';
-    if (auth_provider === 'discord' && discord_guild_id && this.isApprovedGuild(discord_guild_id)) {
-      approvalStatus = 'approved';
-    }
+    // Use provided approval status or determine it
+    let finalApprovalStatus = approval_status || 'pending';
+    
     // Auto-approve admin users
     if (userData.is_admin) {
-      approvalStatus = 'approved';
+      finalApprovalStatus = 'approved';
     }
+    
     // Auto-approve anonymous users (site password login)
     if (auth_provider === 'anonymous') {
-      approvalStatus = 'approved';
+      finalApprovalStatus = 'approved';
     }
 
     try {
       const db = database.getDb();
       const result = await db.run(`
         INSERT INTO users (
+          user_id,
           username, 
           email, 
           auth_provider, 
@@ -55,8 +107,9 @@ class UserModel {
           approval_status,
           discord_guild_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
+        userId,
         username, 
         email, 
         auth_provider, 
@@ -64,25 +117,25 @@ class UserModel {
         passwordHash, 
         passwordSalt, 
         userData.is_admin ? 1 : 0, 
-        approvalStatus,
+        finalApprovalStatus,
         discord_guild_id
       ]);
 
       if (result.lastID) {
-        logger.info('User created successfully', {
-          id: result.lastID,
+        logger.user.info('User created successfully', {
+          userId,
           username,
           auth_provider,
-          approvalStatus
+          approvalStatus: finalApprovalStatus
         });
         
         // If user is pending, create notification for admins
-        if (approvalStatus === 'pending') {
+        if (finalApprovalStatus === 'pending') {
           await notificationModel.createAdminNotification({
             message: `New user registration: ${username} (${auth_provider})`,
             type: 'user_approval',
             data: {
-              userId: result.lastID,
+              userId,
               username,
               email,
               auth_provider
@@ -90,12 +143,12 @@ class UserModel {
           });
         }
         
-        return this.getUserById(result.lastID);
+        return this.getUserByUserId(userId);
       }
       
       throw new Error('Failed to create user');
     } catch (error) {
-      logger.error('User creation failed', {
+      logger.user.error('User creation failed', {
         error: error.message,
         username,
         auth_provider
@@ -105,21 +158,44 @@ class UserModel {
   }
 
   /**
-   * Get user by ID
-   * @param {number} id - User ID
+   * Get user by user_id (random ID)
+   * @param {string} userId - User ID
+   * @returns {Object|null} - User object or null if not found
+   */
+  async getUserByUserId(userId) {
+    try {
+      const db = database.getDb();
+      const user = await db.get(`
+        SELECT user_id, username, email, auth_provider, created_at, last_login, is_admin, approval_status
+        FROM users WHERE user_id = ?
+      `, [userId]);
+      
+      return user || null;
+    } catch (error) {
+      logger.user.error('Failed to get user by user ID', {
+        error: error.message,
+        userId
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Get user by legacy ID (for backward compatibility during migration)
+   * @param {number} id - Legacy user ID
    * @returns {Object|null} - User object or null if not found
    */
   async getUserById(id) {
     try {
       const db = database.getDb();
       const user = await db.get(`
-        SELECT id, username, email, auth_provider, created_at, last_login, is_admin, approval_status
+        SELECT user_id, username, email, auth_provider, created_at, last_login, is_admin, approval_status
         FROM users WHERE id = ?
       `, [id]);
       
       return user || null;
     } catch (error) {
-      logger.error('Failed to get user by ID', {
+      logger.user.error('Failed to get user by legacy ID', {
         error: error.message,
         id
       });
@@ -137,13 +213,13 @@ class UserModel {
     try {
       const db = database.getDb();
       const user = await db.get(`
-        SELECT id, username, email, auth_provider, created_at, last_login, is_admin, approval_status
+        SELECT user_id, username, email, auth_provider, created_at, last_login, is_admin, approval_status
         FROM users WHERE auth_provider = ? AND auth_id = ?
       `, [provider, authId]);
       
       return user || null;
     } catch (error) {
-      logger.error('Failed to get user by auth ID', {
+      logger.user.error('Failed to get user by auth ID', {
         error: error.message,
         provider,
         authId
@@ -161,13 +237,13 @@ class UserModel {
     try {
       const db = database.getDb();
       const user = await db.get(`
-        SELECT id, username, email, auth_provider, created_at, last_login, is_admin, approval_status
+        SELECT user_id, username, email, auth_provider, created_at, last_login, is_admin, approval_status
         FROM users WHERE email = ?
       `, [email]);
       
       return user || null;
     } catch (error) {
-      logger.error('Failed to get user by email', {
+      logger.user.error('Failed to get user by email', {
         error: error.message,
         email
       });
@@ -185,7 +261,7 @@ class UserModel {
     try {
       const db = database.getDb();
       const user = await db.get(`
-        SELECT id, username, email, password_hash, password_salt, is_admin
+        SELECT user_id, username, email, password_hash, password_salt, is_admin, approval_status
         FROM users WHERE email = ? AND auth_provider = 'local'
       `, [email]);
       
@@ -197,20 +273,16 @@ class UserModel {
       
       if (hashedPassword === user.password_hash) {
         // Update last login time
-        await this.updateLastLogin(user.id);
+        await this.updateLastLogin(user.user_id);
         
-        // Return user without sensitive fields
-        return {
-          id: user.id,
-          username: user.username,
-          email: user.email,
-          is_admin: user.is_admin
-        };
+        // Return user without sensitive data
+        const { password_hash, password_salt, ...userWithoutPassword } = user;
+        return userWithoutPassword;
       }
       
       return null;
     } catch (error) {
-      logger.error('Failed to validate credentials', {
+      logger.user.error('Failed to validate credentials', {
         error: error.message,
         email
       });
@@ -220,19 +292,19 @@ class UserModel {
 
   /**
    * Update user's last login time
-   * @param {number} userId - User ID
+   * @param {string} userId - User ID
    * @returns {boolean} - Success status
    */
   async updateLastLogin(userId) {
     try {
       const db = database.getDb();
       await db.run(`
-        UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?
+        UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = ?
       `, [userId]);
       
       return true;
     } catch (error) {
-      logger.error('Failed to update last login time', {
+      logger.user.error('Failed to update last login time', {
         error: error.message,
         userId
       });
@@ -241,8 +313,8 @@ class UserModel {
   }
 
   /**
-   * Generate a random salt for password hashing
-   * @returns {Object} - Object containing the salt
+   * Generate salt for password hashing
+   * @returns {Object} - Salt object
    */
   generateSalt() {
     const salt = crypto.randomBytes(16).toString('hex');
@@ -250,33 +322,30 @@ class UserModel {
   }
 
   /**
-   * Hash a password with the provided salt
-   * @param {string} password - Plain text password
-   * @param {string} salt - Password salt
+   * Hash password with salt
+   * @param {string} password - Password to hash
+   * @param {string} salt - Salt for hashing
    * @returns {string} - Hashed password
    */
   hashPassword(password, salt) {
     const iterations = 10000;
-    const hash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha256').toString('hex');
-    return hash;
+    return crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha256').toString('hex');
   }
 
   /**
-   * Create anonymous user
-   * @param {string} username - Username
-   * @returns {Object} - Created user
+   * Create anonymous user for site password access
+   * @param {string} username - Username for anonymous user
+   * @returns {Object} - Created anonymous user
    */
   async createAnonymousUser(username) {
-    const anonymousId = crypto.randomBytes(16).toString('hex');
-    
     try {
       return await this.createUser({
-        username: username || `Anonymous-${anonymousId.substring(0, 8)}`,
+        username: username || 'Anonymous',
         auth_provider: 'anonymous',
-        auth_id: anonymousId
+        approval_status: 'approved'
       });
     } catch (error) {
-      logger.error('Failed to create anonymous user', {
+      logger.user.error('Failed to create anonymous user', {
         error: error.message
       });
       throw error;
@@ -284,7 +353,7 @@ class UserModel {
   }
 
   /**
-   * Initialize root admin account from environment variables
+   * Initialize root admin user from environment variables
    */
   async initRootAdmin() {
     try {
@@ -292,52 +361,50 @@ class UserModel {
       const rootPassword = process.env.ROOT_ADMIN_PASSWORD;
       
       if (!rootUsername || !rootPassword) {
-        logger.warn('Root admin credentials not defined in environment variables');
+        logger.user.warn('Root admin credentials not defined in environment variables');
         return;
       }
       
-      // Check if admin user exists
-      const existingAdmin = await this.getUserByAuthId('local', rootUsername);
+      // Check if root admin already exists
+      const existingAdmin = await this.getUserByEmail(rootUsername);
       
       if (!existingAdmin) {
         // Create root admin user
         await this.createUser({
-          username: rootUsername,
-          email: process.env.ROOT_ADMIN_EMAIL || `${rootUsername}@localhost`,
+          username: 'Root Admin',
+          email: rootUsername,
           auth_provider: 'local',
           auth_id: rootUsername,
           password: rootPassword,
-          is_admin: 1
+          is_admin: true,
+          approval_status: 'approved'
         });
         
-        logger.info('Root admin user created');
+        logger.user.info('Root admin user created');
       } else {
-        logger.debug('Root admin user already exists');
+        logger.user.debug('Root admin user already exists');
       }
     } catch (error) {
-      logger.error('Failed to initialize root admin', {
+      logger.user.error('Failed to initialize root admin', {
         error: error.message
       });
     }
   }
 
   /**
-   * Check if a Discord guild is in the approved list
+   * Check if Discord guild is approved
    * @param {string} guildId - Discord guild ID
    * @returns {boolean} - True if approved
    */
   isApprovedGuild(guildId) {
-    const approvedGuilds = process.env.APPROVED_DISCORD_GUILDS 
-      ? process.env.APPROVED_DISCORD_GUILDS.split(',') 
-      : [];
-      
+    const approvedGuilds = process.env.DISCORD_APPROVED_GUILDS?.split(',') || [];
     return approvedGuilds.includes(guildId);
   }
 
   /**
    * Get pending users awaiting approval
    * @param {Object} options - Query options
-   * @returns {Array} - Array of user objects
+   * @returns {Array} - List of pending users
    */
   async getPendingUsers(options = {}) {
     const { limit = 20, offset = 0 } = options;
@@ -345,7 +412,7 @@ class UserModel {
     try {
       const db = database.getDb();
       const users = await db.all(`
-        SELECT id, username, email, auth_provider, created_at
+        SELECT user_id, username, email, auth_provider, created_at, discord_guild_id
         FROM users 
         WHERE approval_status = 'pending'
         ORDER BY created_at DESC
@@ -354,7 +421,7 @@ class UserModel {
       
       return users;
     } catch (error) {
-      logger.error('Failed to get pending users', {
+      logger.user.error('Failed to get pending users', {
         error: error.message
       });
       return [];
@@ -363,42 +430,38 @@ class UserModel {
 
   /**
    * Approve a user
-   * @param {number} userId - User ID
+   * @param {string} userId - User ID to approve
    * @returns {boolean} - Success status
    */
   async approveUser(userId) {
     try {
       const db = database.getDb();
-      const user = await this.getUserById(userId);
       
+      // Get user first to check if exists
+      const user = await this.getUserByUserId(userId);
       if (!user) {
         return false;
       }
       
-      const result = await db.run(`
-        UPDATE users
-        SET approval_status = 'approved'
-        WHERE id = ?
+      // Update approval status
+      await db.run(`
+        UPDATE users SET approval_status = 'approved' WHERE user_id = ?
       `, [userId]);
       
-      if (result.changes > 0) {
-        // Create notification for the approved user
+      // Create notification for the user
         await notificationModel.createNotification({
-          userId,
-          message: 'Your account has been approved! You now have full access to the site.',
+        userId: userId,
+        message: 'Your account has been approved! You can now log in.',
           type: 'account_approved',
           data: {
-            approvalDate: new Date().toISOString()
+          approvedAt: new Date().toISOString()
           }
         });
         
-        logger.info('User approved', { userId, username: user.username });
+      logger.user.info('User approved', { userId, username: user.username });
         return true;
-      }
-      
-      return false;
     } catch (error) {
-      logger.error('Failed to approve user', {
+      logger.user.error('Failed to approve user', {
         error: error.message,
         userId
       });
@@ -408,42 +471,38 @@ class UserModel {
 
   /**
    * Reject a user
-   * @param {number} userId - User ID
+   * @param {string} userId - User ID to reject
    * @returns {boolean} - Success status
    */
   async rejectUser(userId) {
     try {
       const db = database.getDb();
-      const user = await this.getUserById(userId);
       
+      // Get user first to check if exists
+      const user = await this.getUserByUserId(userId);
       if (!user) {
         return false;
       }
       
-      const result = await db.run(`
-        UPDATE users
-        SET approval_status = 'rejected'
-        WHERE id = ?
+      // Update approval status
+      await db.run(`
+        UPDATE users SET approval_status = 'rejected' WHERE user_id = ?
       `, [userId]);
       
-      if (result.changes > 0) {
-        // Create notification for the rejected user
+      // Create notification for the user
         await notificationModel.createNotification({
-          userId,
+        userId: userId,
           message: 'Your account registration has been rejected.',
           type: 'account_rejected',
           data: {
-            rejectionDate: new Date().toISOString()
+          rejectedAt: new Date().toISOString()
           }
         });
         
-        logger.info('User rejected', { userId, username: user.username });
+      logger.user.info('User rejected', { userId, username: user.username });
         return true;
-      }
-      
-      return false;
     } catch (error) {
-      logger.error('Failed to reject user', {
+      logger.user.error('Failed to reject user', {
         error: error.message,
         userId
       });
@@ -453,21 +512,19 @@ class UserModel {
 
   /**
    * Check if user is approved
-   * @param {number} userId - User ID
+   * @param {string} userId - User ID
    * @returns {boolean} - True if approved
    */
   async isApproved(userId) {
     try {
       const db = database.getDb();
       const user = await db.get(`
-        SELECT approval_status
-        FROM users
-        WHERE id = ?
+        SELECT approval_status FROM users WHERE user_id = ?
       `, [userId]);
       
       return user && user.approval_status === 'approved';
     } catch (error) {
-      logger.error('Failed to check user approval status', {
+      logger.user.error('Failed to check user approval status', {
         error: error.message,
         userId
       });
@@ -477,21 +534,19 @@ class UserModel {
 
   /**
    * Get user approval status
-   * @param {number} userId - User ID
-   * @returns {string|null} - Approval status or null if user not found
+   * @param {string} userId - User ID
+   * @returns {string|null} - Approval status or null if not found
    */
   async getUserApprovalStatus(userId) {
     try {
       const db = database.getDb();
       const user = await db.get(`
-        SELECT approval_status
-        FROM users
-        WHERE id = ?
+        SELECT approval_status FROM users WHERE user_id = ?
       `, [userId]);
       
       return user ? user.approval_status : null;
     } catch (error) {
-      logger.error('Failed to get user approval status', {
+      logger.user.error('Failed to get user approval status', {
         error: error.message,
         userId
       });

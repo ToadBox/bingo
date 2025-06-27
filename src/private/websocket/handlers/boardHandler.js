@@ -36,12 +36,12 @@ class BoardHandler {
 
             socket.emit('board:data', formattedBoard);
             
-            logger.info('Board data sent to client', {
+            logger.websocket.info('Board data sent to client', {
                 boardId,
                 socketId: socket.id
             });
         } catch (error) {
-            logger.error('Failed to get board', {
+            logger.websocket.error('Failed to get board', {
                 error: error.message,
                 boardId: data.boardId,
                 socketId: socket.id
@@ -89,7 +89,7 @@ class BoardHandler {
                     timestamp: Date.now()
                 });
 
-                logger.info('Cell updated via WebSocket', {
+                logger.websocket.info('Cell updated via WebSocket', {
                     boardId,
                     cellId,
                     value: value?.substring(0, 50) || '',
@@ -101,7 +101,7 @@ class BoardHandler {
                 socket.emit('error', { message: 'Failed to update cell' });
             }
         } catch (error) {
-            logger.error('Failed to update cell via WebSocket', {
+            logger.websocket.error('Failed to update cell via WebSocket', {
                 error: error.message,
                 boardId: data.boardId,
                 cellId: data.cellId,
@@ -141,14 +141,14 @@ class BoardHandler {
                 history
             });
 
-            logger.info('Cell history sent to client', {
+            logger.websocket.info('Cell history sent to client', {
                 boardId,
                 cellId,
                 historyCount: history.length,
                 socketId: socket.id
             });
         } catch (error) {
-            logger.error('Failed to get cell history', {
+            logger.websocket.error('Failed to get cell history', {
                 error: error.message,
                 boardId: data.boardId,
                 cellId: data.cellId,
@@ -168,7 +168,7 @@ class BoardHandler {
 
         socket.join(`board-${boardId}`);
         
-        logger.info('Client joined board room', {
+        logger.websocket.info('Client joined board room', {
             boardId,
             socketId: socket.id,
             userId: socket.user?.id
@@ -187,7 +187,7 @@ class BoardHandler {
 
         socket.leave(`board-${boardId}`);
         
-        logger.info('Client left board room', {
+        logger.websocket.info('Client left board room', {
             boardId,
             socketId: socket.id,
             userId: socket.user?.id

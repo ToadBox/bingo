@@ -3,15 +3,24 @@ const router = express.Router();
 const logger = require('../utils/logger');
 const boardChatModel = require('../models/boardChatModel');
 const boardModel = require('../models/boardModel');
+const { 
+  createValidator, 
+  validatePagination, 
+  validateBoardId 
+} = require('../middleware/validation');
+const { 
+  sendError, 
+  sendSuccess, 
+  asyncHandler, 
+  validateRequired 
+} = require('../utils/responseHelpers');
 
 /**
  * Get chat messages for a board
  */
-router.get('/:boardId', async (req, res) => {
-  try {
+router.get('/:boardId', validateBoardId, validatePagination, asyncHandler(async (req, res) => {
     const { boardId } = req.params;
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = parseInt(req.query.offset) || 0;
+  const { limit, offset } = req.pagination;
     const beforeId = req.query.beforeId;
     const afterId = req.query.afterId;
     
@@ -19,7 +28,7 @@ router.get('/:boardId', async (req, res) => {
     const board = await boardModel.getBoardById(boardId);
     
     if (!board) {
-      return res.status(404).json({ error: 'Board not found' });
+    return sendError(res, 404, 'Board not found', null, 'Chat');
     }
     
     // Check if chat is enabled for this board
@@ -27,7 +36,7 @@ router.get('/:boardId', async (req, res) => {
     const settings = await db.get('SELECT chat_enabled FROM board_settings WHERE board_id = ?', [boardId]);
     
     if (settings && settings.chat_enabled === 0) {
-      return res.status(403).json({ error: 'Chat is disabled for this board' });
+    return sendError(res, 403, 'Chat is disabled for this board', null, 'Chat');
     }
     
     // Get chat messages
@@ -38,34 +47,31 @@ router.get('/:boardId', async (req, res) => {
       afterId
     });
     
-    return res.json({
+  logger.chat.debug('Chat messages retrieved', {
+    boardId,
+    messageCount: messages.length,
+    userId: req.user?.id
+  });
+  
+  return sendSuccess(res, {
       messages,
       meta: {
         limit,
         offset
       }
-    });
-  } catch (error) {
-    logger.error('Failed to get chat messages', {
-      error: error.message,
-      boardId: req.params.boardId,
-      userId: req.user?.id
-    });
-    return res.status(500).json({ error: 'Failed to get chat messages' });
-  }
-});
+  }, 200, 'Chat');
+}, 'Chat'));
 
 /**
  * Add a chat message to a board
  */
-router.post('/:boardId', async (req, res) => {
-  try {
+router.post('/:boardId', validateBoardId, createValidator('chat'), asyncHandler(async (req, res) => {
     const { boardId } = req.params;
-    const { message } = req.body;
-    const userId = req.user.id;
+  const { message } = req.validated;
+  const userId = req.user.user_id;
     
-    if (!message || typeof message !== 'string' || message.trim().length === 0) {
-      return res.status(400).json({ error: 'Message cannot be empty' });
+  if (typeof message !== 'string' || message.trim().length === 0) {
+    return sendError(res, 400, 'Message cannot be empty', null, 'Chat');
     }
     
     // Check if this is a command message
@@ -88,12 +94,13 @@ router.post('/:boardId', async (req, res) => {
       
       // If command failed, return the error message
       if (!commandResult.success) {
-        return res.status(400).json({ error: commandResult.message });
+      return sendError(res, 400, commandResult.message, null, 'Chat');
       }
       
       // For some commands, we might not want to store a message
       if (command === 'clear') {
-        return res.json({ success: true, message: commandResult.message });
+      logger.chat.info('Chat cleared via command', { boardId, userId });
+      return sendSuccess(res, { success: true, message: commandResult.message }, 200, 'Chat');
       }
     }
     
@@ -105,42 +112,38 @@ router.post('/:boardId', async (req, res) => {
       command
     });
     
-    return res.status(201).json({ message: chatMessage });
-  } catch (error) {
-    logger.error('Failed to add chat message', {
-      error: error.message,
-      boardId: req.params.boardId,
-      userId: req.user?.id
-    });
-    return res.status(500).json({ error: 'Failed to add chat message' });
-  }
-});
+  logger.chat.debug('Chat message added', {
+    boardId,
+    userId,
+    messageId: chatMessage.id,
+    isCommand: !!command
+  });
+  
+  return sendSuccess(res, { message: chatMessage }, 201, 'Chat');
+}, 'Chat'));
 
 /**
  * Delete a chat message
  */
-router.delete('/:boardId/messages/:messageId', async (req, res) => {
-  try {
+router.delete('/:boardId/messages/:messageId', validateBoardId, asyncHandler(async (req, res) => {
     const { boardId, messageId } = req.params;
-    const userId = req.user.id;
-    const isAdmin = req.isAdmin === true;
+  const userId = req.user.user_id;
+  const isAdmin = req.user.is_admin === true;
     
     const success = await boardChatModel.deleteChatMessage(messageId, userId, isAdmin);
     
     if (!success) {
-      return res.status(404).json({ error: 'Message not found or you do not have permission to delete it' });
-    }
-    
-    return res.json({ success: true });
-  } catch (error) {
-    logger.error('Failed to delete chat message', {
-      error: error.message,
-      boardId: req.params.boardId,
-      messageId: req.params.messageId,
-      userId: req.user?.id
-    });
-    return res.status(500).json({ error: 'Failed to delete chat message' });
+    return sendError(res, 404, 'Message not found or you do not have permission to delete it', null, 'Chat');
   }
-});
+  
+  logger.chat.info('Chat message deleted', {
+    boardId,
+    messageId,
+    userId,
+    isAdmin
+    });
+  
+  return sendSuccess(res, { success: true }, 200, 'Chat');
+}, 'Chat'));
 
 module.exports = router; 

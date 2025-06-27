@@ -13,12 +13,7 @@ class SessionModel {
    * @returns {Object} - Created session with token
    */
   async createSession(sessionData) {
-    const { userId, ipAddress, userAgent, expiresIn } = sessionData;
-    const token = crypto.randomBytes(32).toString('hex');
-    const expiryMs = expiresIn || this.defaultExpiryTime;
-    
-    // Calculate expiry timestamp
-    const expiresAt = new Date(Date.now() + expiryMs);
+    const { userId, token, expiresAt, ipAddress, userAgent } = sessionData;
     
     try {
       const db = database.getDb();
@@ -31,7 +26,7 @@ class SessionModel {
         throw new Error('Failed to create session');
       }
       
-      logger.debug('Session created', {
+      logger.auth.debug('Session created', {
         userId,
         sessionId: result.lastID,
         expiresAt: expiresAt.toISOString()
@@ -44,7 +39,7 @@ class SessionModel {
         expiresAt
       };
     } catch (error) {
-      logger.error('Failed to create session', {
+      logger.auth.error('Failed to create session', {
         error: error.message,
         userId
       });
@@ -57,7 +52,7 @@ class SessionModel {
    * @param {string} token - Session token
    * @returns {Object|null} - Session object or null if not found or expired
    */
-  async getSessionByToken(token) {
+  async getSession(token) {
     try {
       const db = database.getDb();
       const session = await db.get(`
@@ -80,7 +75,7 @@ class SessionModel {
       
       return session;
     } catch (error) {
-      logger.error('Failed to get session by token', {
+      logger.auth.error('Failed to get session by token', {
         error: error.message,
         tokenLength: token ? token.length : 0
       });
@@ -89,8 +84,17 @@ class SessionModel {
   }
 
   /**
+   * Get session by token (legacy method name)
+   * @param {string} token - Session token
+   * @returns {Object|null} - Session object or null if not found or expired
+   */
+  async getSessionByToken(token) {
+    return this.getSession(token);
+  }
+
+  /**
    * Get all sessions for a user
-   * @param {number} userId - User ID
+   * @param {string} userId - User ID
    * @returns {Array} - Array of session objects
    */
   async getUserSessions(userId) {
@@ -105,7 +109,7 @@ class SessionModel {
       
       return sessions;
     } catch (error) {
-      logger.error('Failed to get user sessions', {
+      logger.auth.error('Failed to get user sessions', {
         error: error.message,
         userId
       });
@@ -133,7 +137,7 @@ class SessionModel {
       
       return result.changes > 0;
     } catch (error) {
-      logger.error('Failed to extend session', {
+      logger.auth.error('Failed to extend session', {
         error: error.message,
         tokenLength: token ? token.length : 0
       });
@@ -156,7 +160,7 @@ class SessionModel {
       
       return result.changes > 0;
     } catch (error) {
-      logger.error('Failed to delete session', {
+      logger.auth.error('Failed to delete session', {
         error: error.message,
         tokenLength: token ? token.length : 0
       });
@@ -166,7 +170,7 @@ class SessionModel {
 
   /**
    * Delete all sessions for a user
-   * @param {number} userId - User ID
+   * @param {string} userId - User ID
    * @returns {boolean} - Success status
    */
   async deleteUserSessions(userId) {
@@ -179,7 +183,7 @@ class SessionModel {
       
       return result.changes > 0;
     } catch (error) {
-      logger.error('Failed to delete user sessions', {
+      logger.auth.error('Failed to delete user sessions', {
         error: error.message,
         userId
       });
@@ -199,16 +203,59 @@ class SessionModel {
         WHERE expires_at < CURRENT_TIMESTAMP
       `);
       
-      logger.debug('Cleaned up expired sessions', {
-        count: result.changes
-      });
+      const deletedCount = result.changes || 0;
       
-      return result.changes;
+      if (deletedCount > 0) {
+        logger.auth.info('Cleaned up expired sessions', { 
+          deletedCount 
+      });
+      }
+      
+      return deletedCount;
     } catch (error) {
-      logger.error('Failed to clean up expired sessions', {
+      logger.auth.error('Failed to cleanup expired sessions', {
         error: error.message
       });
       return 0;
+    }
+  }
+
+  /**
+   * Get session statistics
+   * @returns {Object} - Session statistics
+   */
+  async getSessionStats() {
+    try {
+      const db = database.getDb();
+      
+      const totalSessions = await db.get(`
+        SELECT COUNT(*) as count FROM sessions
+      `);
+      
+      const activeSessions = await db.get(`
+        SELECT COUNT(*) as count FROM sessions
+        WHERE expires_at > CURRENT_TIMESTAMP
+      `);
+      
+      const expiredSessions = await db.get(`
+        SELECT COUNT(*) as count FROM sessions
+        WHERE expires_at <= CURRENT_TIMESTAMP
+      `);
+      
+      return {
+        total: totalSessions.count,
+        active: activeSessions.count,
+        expired: expiredSessions.count
+      };
+    } catch (error) {
+      logger.auth.error('Failed to get session statistics', {
+        error: error.message
+      });
+      return {
+        total: 0,
+        active: 0,
+        expired: 0
+      };
     }
   }
 }

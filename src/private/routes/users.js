@@ -2,72 +2,60 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
 const userModel = require('../models/userModel');
+const { 
+  sendError, 
+  sendSuccess, 
+  asyncHandler, 
+  validateRequired 
+} = require('../utils/responseHelpers');
 
 // Get user profile
-router.get('/profile', async (req, res) => {
-  try {
+router.get('/profile', asyncHandler(async (req, res) => {
     // User is already authenticated via middleware
-    const userId = req.user.id;
-    const user = await userModel.getUserById(userId);
+  const userId = req.user.user_id;
+  const user = await userModel.getUserByUserId(userId);
     
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+    return sendError(res, 404, 'User not found', null, 'User');
     }
     
     // Don't return sensitive information
-    res.json({
-      id: user.id,
+  const userProfile = {
+    id: user.user_id,
       username: user.username,
       email: user.email,
       auth_provider: user.auth_provider,
       created_at: user.created_at,
       last_login: user.last_login,
       is_admin: !!user.is_admin
-    });
-  } catch (error) {
-    logger.error('Failed to get user profile', {
-      error: error.message,
-      userId: req.user?.id
-    });
-    res.status(500).json({ error: 'Failed to get user profile' });
-  }
-});
+  };
+
+  logger.user.debug('User profile retrieved', { userId });
+  return sendSuccess(res, userProfile, 200, 'User');
+}, 'User'));
 
 // Update user profile
-router.put('/profile', async (req, res) => {
-  try {
-    const userId = req.user.id;
+router.put('/profile', asyncHandler(async (req, res) => {
+  const userId = req.user.user_id;
+  validateRequired(req, ['username']);
     const { username } = req.body;
-    
-    // Only allow updating username for now
-    if (!username) {
-      return res.status(400).json({ error: 'Username is required' });
-    }
     
     // Update user in database (functionality to be implemented in userModel)
     // For now we just return success
     
-    logger.info('User profile updated', {
+  logger.user.info('User profile updated', {
       userId,
       username
     });
     
-    res.json({
+  return sendSuccess(res, {
       success: true,
       message: 'Profile updated successfully'
-    });
-  } catch (error) {
-    logger.error('Failed to update user profile', {
-      error: error.message,
-      userId: req.user?.id
-    });
-    res.status(500).json({ error: 'Failed to update user profile' });
-  }
-});
+  }, 200, 'User');
+}, 'User'));
 
 // Get user's boards
-router.get('/boards', async (req, res) => {
-  try {
+router.get('/boards', asyncHandler(async (req, res) => {
     const userId = req.user.id;
     const options = {
       userId,
@@ -98,36 +86,31 @@ router.get('/boards', async (req, res) => {
       markedCount: board.markedCount
     }));
     
-    res.json(formattedBoards);
-  } catch (error) {
-    logger.error('Failed to get user boards', {
-      error: error.message,
-      userId: req.user?.id
-    });
-    res.status(500).json({ error: 'Failed to get user boards' });
-  }
-});
+  logger.user.debug('User boards retrieved', { 
+    userId, 
+    boardCount: formattedBoards.length 
+  });
+  
+  return sendSuccess(res, formattedBoards, 200, 'User');
+}, 'User'));
 
 // Admin only: Get list of users
-router.get('/list', async (req, res) => {
-  try {
+router.get('/list', asyncHandler(async (req, res) => {
     // Check if user is admin
     if (!req.isAdmin) {
-      return res.status(403).json({ error: 'Administrator access required' });
+    return sendError(res, 403, 'Administrator access required', null, 'User');
     }
     
     // Functionality to be implemented in userModel
     // For now return an empty array
     const users = [];
     
-    res.json(users);
-  } catch (error) {
-    logger.error('Failed to get user list', {
-      error: error.message,
-      adminId: req.user?.id
+  logger.user.debug('User list retrieved by admin', { 
+    adminId: req.user?.id,
+    userCount: users.length 
     });
-    res.status(500).json({ error: 'Failed to get user list' });
-  }
-});
+  
+  return sendSuccess(res, users, 200, 'User');
+}, 'User'));
 
 module.exports = router; 

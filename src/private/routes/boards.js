@@ -4,6 +4,17 @@ const logger = require('../utils/logger');
 const boardModel = require('../models/boardModel');
 const userModel = require('../models/userModel');
 const { isAuthenticated } = require('../middleware/auth');
+const { 
+  createValidator, 
+  validatePagination, 
+  validateBoardId 
+} = require('../middleware/validation');
+const { 
+  sendError, 
+  sendSuccess, 
+  asyncHandler, 
+  validateRequired 
+} = require('../utils/responseHelpers');
 
 // Helper function to measure elapsed time
 const getElapsedMs = (start) => {
@@ -11,111 +22,131 @@ const getElapsedMs = (start) => {
   return elapsed[0] * 1000 + elapsed[1] / 1000000;
 };
 
-/**
- * GET /boards - List all boards with pagination and filtering
- */
-router.get('/', isAuthenticated, async (req, res) => {
-  const startTime = process.hrtime();
+// Helper function to format board for frontend
+const formatBoard = (board, user) => {
+  const isAnonymous = user?.auth_provider === 'anonymous';
+  let boardUrl;
   
-  try {
-    const options = {
-      userId: req.user?.id,
-      includePublic: true,
-      limit: parseInt(req.query.limit) || 20,
-      offset: parseInt(req.query.offset) || 0,
-      sortBy: req.query.sortBy || 'last_updated',
-      sortOrder: req.query.sortOrder || 'DESC',
-      searchTerm: req.query.search || null
-    };
+  if (board.creator_username) {
+    boardUrl = `/${board.creator_username}/${board.slug}`;
+  } else if (isAnonymous || board.createdByName) {
+    boardUrl = `/anonymous/${board.slug}`;
+  } else {
+    boardUrl = `/server/${board.slug}`;
+  }
 
-    const boards = await boardModel.getAllBoards(options);
-
-    // Format boards for frontend compatibility
-    const formattedBoards = boards.map(board => ({
+  return {
       id: board.uuid,
       title: board.title,
       slug: board.slug,
-      createdBy: board.creator_username || 'server',
+    createdBy: board.creator_username || board.createdByName || 'server',
       createdAt: new Date(board.created_at).getTime(),
       lastUpdated: new Date(board.last_updated).getTime(),
       cellCount: board.cellCount || 0,
       markedCount: board.markedCount || 0,
       isPublic: !!board.is_public,
       description: board.description,
-      // Generate URL based on creator
-      url: board.creator_username 
-        ? `/${board.creator_username}/${board.slug}`
-        : `/server/${board.slug}`
-    }));
+    url: boardUrl,
+    cells: board.cells || [],
+    settings: board.settings ? JSON.parse(board.settings) : {}
+  };
+};
 
-    logger.info('Boards listed successfully', {
-      count: formattedBoards.length,
-      userId: req.user?.id,
-      duration: getElapsedMs(startTime)
-    });
-
-    res.json({
-      boards: formattedBoards,
-      meta: {
-        limit: options.limit,
-        offset: options.offset,
-        total: formattedBoards.length,
-        hasMore: formattedBoards.length === options.limit
-      }
-    });
-  } catch (error) {
-    logger.error('Failed to list boards', {
-      error: error.message,
-      duration: getElapsedMs(startTime)
-    });
-    res.status(500).json({ error: 'Failed to list boards' });
+/**
+ * GET /boards - List all boards with pagination and filters
+ */
+router.get('/', validatePagination, asyncHandler(async (req, res) => {
+  const { page, limit, offset } = req.pagination;
+  const { search, isPublic, username } = req.query;
+  
+  // Build filter options
+  const options = {
+    limit,
+    offset,
+    search,
+    orderBy: 'last_updated DESC'
+  };
+  
+  // Filter by public status if specified
+  if (isPublic !== undefined) {
+    options.isPublic = isPublic === 'true';
   }
-});
+  
+  // Filter by username if specified
+  if (username) {
+    const user = await userModel.getUserByUsername(username);
+    if (user) {
+      options.userId = user.user_id;
+    } else {
+      // User doesn't exist, return empty results
+      return sendSuccess(res, {
+        boards: [],
+        pagination: {
+          total: 0,
+          totalPages: 0,
+          currentPage: page,
+          limit,
+          offset,
+          hasNext: false,
+          hasPrev: false
+        }
+      }, 200, 'Board');
+    }
+  }
+  
+  const result = await boardModel.getAllBoards(options);
+  
+  // Format boards for frontend compatibility
+  const formattedBoards = result.boards.map(board => ({
+    id: board.uuid,
+    title: board.title,
+    slug: board.slug,
+    createdBy: board.username || 'server',
+    createdAt: new Date(board.created_at).getTime(),
+    lastUpdated: new Date(board.last_updated).getTime(),
+    isPublic: !!board.is_public,
+    description: board.description,
+    settings: board.settings
+  }));
+  
+  logger.board.debug('Boards retrieved', {
+    count: formattedBoards.length,
+    page,
+    search,
+    username
+  });
+  
+  return sendSuccess(res, {
+    boards: formattedBoards,
+    pagination: result.pagination
+  }, 200, 'Board');
+}, 'Board'));
 
 /**
  * POST /boards - Create a new board
  */
-router.post('/', isAuthenticated, async (req, res) => {
-  const startTime = process.hrtime();
+router.post('/', isAuthenticated, createValidator('board'), asyncHandler(async (req, res) => {
+  const { title, description = '', isPublic = false } = req.validated;
+  const userId = req.user.user_id;
   
-  try {
-    const { title, description, isPublic, size, createdByName } = req.body;
-    
-    if (!title || title.trim().length === 0) {
-      return res.status(400).json({ error: 'Title is required' });
-    }
-
-    // Check if user is anonymous
-    const isAnonymous = req.user.auth_provider === 'anonymous';
-    
-    // For anonymous users, use provided createdByName or default to "Anonymous"
-    let displayName = req.user.username;
-    if (isAnonymous) {
-      displayName = createdByName?.trim() || 'Anonymous';
+  // Get user info for board creation
+  const user = await userModel.getUserByUserId(userId);
+  if (!user) {
+    return sendError(res, 404, 'User not found', null, 'Board');
     }
 
     const boardData = {
-      title: title.trim(),
-      description: description?.trim() || '',
-      createdBy: req.user.id,
-      isPublic: !!isPublic,
-      size: size || 5,
-      createdByName: displayName // Store the display name for anonymous users
+    title,
+    description,
+    isPublic,
+    createdBy: userId,
+    createdByName: user.username
     };
 
     const board = await boardModel.createBoard(boardData);
 
     if (!board) {
-      return res.status(500).json({ error: 'Failed to create board' });
-    }
-
-    // For anonymous users, use a more URL-friendly path structure
-    let boardUrl;
-    if (isAnonymous) {
-      // Use anonymous/<boardId> for anonymous user boards
-      boardUrl = `/anonymous/${board.slug}`;
-    } else {
-      boardUrl = `/${req.user.username}/${board.slug}`;
+    return sendError(res, 500, 'Failed to create board', null, 'Board');
     }
 
     // Format for frontend compatibility
@@ -123,114 +154,71 @@ router.post('/', isAuthenticated, async (req, res) => {
       id: board.uuid,
       title: board.title,
       slug: board.slug,
-      createdBy: displayName,
+    createdBy: user.username,
       createdAt: new Date(board.created_at).getTime(),
       lastUpdated: new Date(board.last_updated).getTime(),
-      cells: board.cells || [],
       isPublic: !!board.is_public,
       description: board.description,
-      url: boardUrl
+    settings: board.settings,
+    cells: board.cells
     };
 
-    logger.info('Board created successfully', {
+  logger.board.info('Board created successfully', {
       boardId: board.uuid,
-      title,
-      userId: req.user.id,
-      isAnonymous,
-      displayName,
-      duration: getElapsedMs(startTime)
+    title: board.title,
+    userId,
+    username: user.username
     });
 
-    res.status(201).json(formattedBoard);
-  } catch (error) {
-    logger.error('Failed to create board', {
-      error: error.message,
-      userId: req.user?.id,
-      duration: getElapsedMs(startTime)
-    });
-    res.status(500).json({ error: 'Failed to create board' });
-  }
-});
+  return sendSuccess(res, formattedBoard, 201, 'Board');
+}, 'Board'));
 
 /**
  * GET /anonymous/:slug - Get anonymous board by slug
  */
-router.get('/anonymous/:slug', isAuthenticated, async (req, res) => {
+router.get('/anonymous/:slug', isAuthenticated, asyncHandler(async (req, res) => {
   const { slug } = req.params;
   const startTime = process.hrtime();
   
-  try {
     const board = await boardModel.getBoardByAnonymousSlug(slug);
 
     if (!board) {
-      logger.warn('Anonymous board not found', { slug });
-      return res.status(404).json({ error: 'Board not found' });
+    logger.board.warn('Anonymous board not found', { slug });
+    return sendError(res, 404, 'Board not found', null, 'Board');
     }
 
     // Check if user has access to private board
     if (!board.is_public && board.created_by !== req.user?.id && !req.user?.is_admin) {
-      logger.warn('Access denied to private anonymous board', {
+    logger.board.warn('Access denied to private anonymous board', {
         slug,
         userId: req.user?.id
       });
-      return res.status(403).json({ error: 'Access denied' });
+    return sendError(res, 403, 'Access denied', null, 'Board');
     }
 
     // Format for frontend compatibility
-    const formattedBoard = {
-      id: board.uuid,
-      title: board.title,
-      slug: board.slug,
-      createdBy: board.createdByName || 'Anonymous',
-      createdAt: new Date(board.created_at).getTime(),
-      lastUpdated: new Date(board.last_updated).getTime(),
-      cells: board.cells || [],
-      isPublic: !!board.is_public,
-      description: board.description,
-      settings: board.settings ? JSON.parse(board.settings) : {}
-    };
+  const formattedBoard = formatBoard(board, req.user);
 
-    logger.info('Anonymous board retrieved successfully', {
+  logger.board.info('Anonymous board retrieved successfully', {
       slug,
       boardId: board.uuid,
       userId: req.user?.id,
       duration: getElapsedMs(startTime)
     });
 
-    res.json(formattedBoard);
-  } catch (error) {
-    logger.error('Failed to retrieve anonymous board', {
-      error: error.message,
-      slug,
-      duration: getElapsedMs(startTime)
-    });
-    res.status(500).json({ error: 'Failed to retrieve anonymous board' });
-  }
-});
+  return sendSuccess(res, formattedBoard, 200, 'Board');
+}, 'Board'));
 
 /**
  * GET /:username/:slug - Get specific board by username and slug
  */
-router.get('/:username/:slug', isAuthenticated, async (req, res) => {
+router.get('/:username/:slug', asyncHandler(async (req, res) => {
   const { username, slug } = req.params;
-  const startTime = process.hrtime();
   
-  try {
     const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
 
     if (!board) {
-      logger.warn('Board not found', { username, slug });
-      return res.status(404).json({ error: 'Board not found' });
-    }
-
-    // Check if user has access to private board
-    if (!board.is_public && board.created_by !== req.user?.id && !req.user?.is_admin) {
-      logger.warn('Access denied to private board', {
-        username,
-        slug,
-        userId: req.user?.id
-      });
-      return res.status(403).json({ error: 'Access denied' });
+    return sendError(res, 404, 'Board not found', null, 'Board');
     }
 
     // Format for frontend compatibility
@@ -238,71 +226,52 @@ router.get('/:username/:slug', isAuthenticated, async (req, res) => {
       id: board.uuid,
       title: board.title,
       slug: board.slug,
-      createdBy: board.username || 'server',
+    createdBy: username,
       createdAt: new Date(board.created_at).getTime(),
       lastUpdated: new Date(board.last_updated).getTime(),
-      cells: board.cells || [],
       isPublic: !!board.is_public,
       description: board.description,
-      settings: board.settings ? JSON.parse(board.settings) : {}
+    settings: board.settings,
+    cells: board.cells
     };
 
-    logger.info('Board retrieved successfully', {
+  logger.board.debug('Board retrieved by username and slug', {
       username,
       slug,
-      boardId: board.uuid,
-      userId: req.user?.id,
-      duration: getElapsedMs(startTime)
+    boardId: board.uuid
     });
 
-    res.json(formattedBoard);
-  } catch (error) {
-    logger.error('Failed to retrieve board', {
-      error: error.message,
-      username,
-      slug,
-      duration: getElapsedMs(startTime)
-    });
-    res.status(500).json({ error: 'Failed to retrieve board' });
-  }
-});
+  return sendSuccess(res, formattedBoard, 200, 'Board');
+}, 'Board'));
 
 /**
  * PUT /:username/:slug - Update board (owner only)
  */
-router.put('/:username/:slug', isAuthenticated, async (req, res) => {
+router.put('/:username/:slug', isAuthenticated, createValidator('board', { allowExtra: true }), asyncHandler(async (req, res) => {
   const { username, slug } = req.params;
-  const startTime = process.hrtime();
+  const { title, description, isPublic } = req.validated;
+  const userId = req.user.user_id;
   
-  try {
     const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
 
     if (!board) {
-      return res.status(404).json({ error: 'Board not found' });
+    return sendError(res, 404, 'Board not found', null, 'Board');
     }
 
     // Check ownership
-    if (board.created_by !== req.user.id && !req.user.is_admin) {
-      return res.status(403).json({ error: 'You do not have permission to update this board' });
+  if (board.created_by !== userId && !req.user.is_admin) {
+    return sendError(res, 403, 'You do not have permission to update this board', null, 'Board');
     }
 
-    const { title, description, isPublic } = req.body;
     const updates = {};
-
-    if (title !== undefined) {
-      updates.title = title.trim();
-    }
-    if (description !== undefined) {
-      updates.description = description.trim();
-    }
-    if (isPublic !== undefined) {
-      updates.is_public = !!isPublic;
-    }
+  if (title !== undefined) updates.title = title;
+  if (description !== undefined) updates.description = description;
+  if (isPublic !== undefined) updates.is_public = isPublic;
 
     const updatedBoard = await boardModel.updateBoard(board.id, updates);
 
     if (!updatedBoard) {
-      return res.status(500).json({ error: 'Failed to update board' });
+    return sendError(res, 500, 'Failed to update board', null, 'Board');
     }
 
     // Format for frontend compatibility
@@ -310,149 +279,181 @@ router.put('/:username/:slug', isAuthenticated, async (req, res) => {
       id: updatedBoard.uuid,
       title: updatedBoard.title,
       slug: updatedBoard.slug,
-      createdBy: req.user.username,
+    createdBy: username,
       createdAt: new Date(updatedBoard.created_at).getTime(),
       lastUpdated: new Date(updatedBoard.last_updated).getTime(),
       isPublic: !!updatedBoard.is_public,
-      description: updatedBoard.description
+    description: updatedBoard.description,
+    settings: updatedBoard.settings
     };
 
-    logger.info('Board updated successfully', {
+  logger.board.info('Board updated successfully', {
       username,
       slug,
       boardId: board.uuid,
-      updates,
-      userId: req.user.id,
-      duration: getElapsedMs(startTime)
+    updates: Object.keys(updates),
+    userId
     });
 
-    res.json(formattedBoard);
-  } catch (error) {
-    logger.error('Failed to update board', {
-      error: error.message,
-      username,
-      slug,
-      userId: req.user?.id,
-      duration: getElapsedMs(startTime)
-    });
-    res.status(500).json({ error: 'Failed to update board' });
-  }
-});
+  return sendSuccess(res, formattedBoard, 200, 'Board');
+}, 'Board'));
 
 /**
  * DELETE /:username/:slug - Delete board (owner only)
  */
-router.delete('/:username/:slug', isAuthenticated, async (req, res) => {
+router.delete('/:username/:slug', isAuthenticated, asyncHandler(async (req, res) => {
   const { username, slug } = req.params;
-  const startTime = process.hrtime();
+  const userId = req.user.user_id;
   
-  try {
     const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
 
     if (!board) {
-      return res.status(404).json({ error: 'Board not found' });
+    return sendError(res, 404, 'Board not found', null, 'Board');
     }
 
     // Check ownership
-    if (board.created_by !== req.user.id && !req.user.is_admin) {
-      return res.status(403).json({ error: 'You do not have permission to delete this board' });
+  if (board.created_by !== userId && !req.user.is_admin) {
+    return sendError(res, 403, 'You do not have permission to delete this board', null, 'Board');
     }
 
     const success = await boardModel.deleteBoard(board.id);
 
     if (!success) {
-      return res.status(500).json({ error: 'Failed to delete board' });
+    return sendError(res, 500, 'Failed to delete board', null, 'Board');
     }
 
-    logger.info('Board deleted successfully', {
+  logger.board.info('Board deleted successfully', {
       username,
       slug,
       boardId: board.uuid,
-      userId: req.user.id,
-      duration: getElapsedMs(startTime)
+    userId
     });
 
-    res.json({ success: true });
-  } catch (error) {
-    logger.error('Failed to delete board', {
-      error: error.message,
-      username,
-      slug,
-      userId: req.user?.id,
-      duration: getElapsedMs(startTime)
-    });
-    res.status(500).json({ error: 'Failed to delete board' });
-  }
-});
+  return sendSuccess(res, { success: true }, 200, 'Board');
+}, 'Board'));
 
 /**
  * PUT /:username/:slug/cells/:row/:col - Update cell in board
  */
-router.put('/:username/:slug/cells/:row/:col', async (req, res) => {
+router.put('/:username/:slug/cells/:row/:col', createValidator('cell'), asyncHandler(async (req, res) => {
   const { username, slug, row, col } = req.params;
-  const { value, marked, type } = req.body;
-  const startTime = process.hrtime();
+  const { value, marked, type } = req.validated;
+  const userId = req.user?.user_id;
   
-  try {
     const rowNum = parseInt(row);
     const colNum = parseInt(col);
     
-    if (isNaN(rowNum) || isNaN(colNum)) {
-      return res.status(400).json({ error: 'Invalid row or column' });
+  if (isNaN(rowNum) || isNaN(colNum) || rowNum < 0 || colNum < 0) {
+    return sendError(res, 400, 'Invalid row or column coordinates', null, 'Board');
     }
 
     const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
 
     if (!board) {
-      return res.status(404).json({ error: 'Board not found' });
+    return sendError(res, 404, 'Board not found', null, 'Board');
     }
 
-    // Update cell in database
-    const updated = await boardModel.updateCell(board.id, rowNum, colNum, { 
-      value: value || '', 
-      marked: !!marked, 
-      type: type || 'text' 
-    }, req.user?.id);
+  // Validate cell coordinates against board size
+  const boardSize = board.settings?.size || 5;
+  if (rowNum >= boardSize || colNum >= boardSize) {
+    return sendError(res, 400, `Cell coordinates out of bounds. Board size is ${boardSize}x${boardSize}`, null, 'Board');
+  }
+  
+  // Validate image URL if type is image
+  if (type === 'image' && value) {
+    const isValidImageUrl = /^(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp|svg))$/i.test(value) ||
+                           /^data:image\/[a-zA-Z]*;base64,/.test(value);
 
-    if (!updated) {
-      return res.status(500).json({ error: 'Failed to update cell' });
+    if (!isValidImageUrl) {
+      return sendError(res, 400, 'Invalid image URL or data URI format', null, 'Board');
     }
+  }
+  
+  // Prepare cell update data
+  const cellData = {};
+  if (value !== undefined) cellData.value = value;
+  if (marked !== undefined) cellData.marked = marked;
+  if (type !== undefined) cellData.type = type;
 
-    const updatedCell = await boardModel.getCell(board.id, rowNum, colNum);
+  const updatedCell = await boardModel.updateCell(board.id, rowNum, colNum, cellData, userId);
+  
+  if (!updatedCell) {
+    return sendError(res, 500, 'Failed to update cell', null, 'Board');
+  }
 
     const result = { 
       success: true, 
       cell: { 
         id: `${rowNum}-${colNum}`, 
-        value: updatedCell?.value || '',
-        marked: updatedCell?.marked === 1, 
-        type: updatedCell?.type || 'text' 
+      row: rowNum,
+      col: colNum,
+      value: updatedCell.value || '',
+      marked: updatedCell.marked === 1,
+      type: updatedCell.type || 'text',
+      lastUpdated: updatedCell.last_updated,
+      updatedBy: updatedCell.updated_by
       } 
     };
 
-    logger.info('Cell updated successfully', {
+  logger.board.info('Cell updated successfully', {
       username,
       slug,
       boardId: board.uuid,
       row: rowNum,
       col: colNum,
-      userId: req.user?.id,
-      duration: getElapsedMs(startTime)
-    });
+    type: cellData.type,
+    hasImage: type === 'image',
+    userId
+  });
+  
+  return sendSuccess(res, result, 200, 'Board');
+}, 'Board'));
 
-    res.json(result);
-  } catch (error) {
-    logger.error('Failed to update cell', {
-      error: error.message,
+/**
+ * GET /:username/:slug/cells/:row/:col - Get specific cell
+ */
+router.get('/:username/:slug/cells/:row/:col', asyncHandler(async (req, res) => {
+  const { username, slug, row, col } = req.params;
+  
+  const rowNum = parseInt(row);
+  const colNum = parseInt(col);
+  
+  if (isNaN(rowNum) || isNaN(colNum) || rowNum < 0 || colNum < 0) {
+    return sendError(res, 400, 'Invalid row or column coordinates', null, 'Board');
+  }
+  
+  const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
+  
+  if (!board) {
+    return sendError(res, 404, 'Board not found', null, 'Board');
+  }
+  
+  const cell = await boardModel.getCell(board.id, rowNum, colNum);
+  
+  if (!cell) {
+    return sendError(res, 404, 'Cell not found', null, 'Board');
+  }
+  
+  const formattedCell = {
+    id: `${rowNum}-${colNum}`,
+    row: rowNum,
+    col: colNum,
+    value: cell.value || '',
+    marked: cell.marked === 1,
+    type: cell.type || 'text',
+    lastUpdated: cell.last_updated,
+    updatedBy: cell.updated_by
+  };
+  
+  logger.board.debug('Cell retrieved', {
       username,
       slug,
-      row,
-      col,
-      userId: req.user?.id,
-      duration: getElapsedMs(startTime)
-    });
-    res.status(500).json({ error: 'Failed to update cell' });
-  }
-});
+    boardId: board.uuid,
+    row: rowNum,
+    col: colNum
+  });
+  
+  return sendSuccess(res, formattedCell, 200, 'Board');
+}, 'Board'));
 
 module.exports = router; 

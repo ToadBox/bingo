@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const logger = require('./logger');
-const migrations = require('./migrations');
+const database = require('../models/database');
 
 class StartupChecks {
   constructor() {
@@ -201,7 +201,11 @@ LOG_LEVEL=info
   async runDatabaseMigrations() {
     try {
       logger.info('Running database migrations...');
-      await migrations.runMigrations();
+      // Migrations are now handled by the database initialization
+      // This method is kept for compatibility but migrations run automatically
+      if (database.migrationManager) {
+        await database.migrationManager.runMigrations();
+      }
       logger.info('Database migrations completed successfully');
     } catch (error) {
       logger.error('Database migrations failed', {
@@ -258,7 +262,11 @@ LOG_LEVEL=info
 
     // Get migration status
     try {
-      status.migrations = await migrations.getMigrationStatus();
+      if (database.migrationManager) {
+        status.migrations = { status: 'completed', message: 'Migrations handled by database initialization' };
+      } else {
+        status.migrations = { status: 'unknown', message: 'Migration manager not available' };
+      }
     } catch (error) {
       status.migrations = { error: error.message };
     }

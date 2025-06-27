@@ -1,301 +1,397 @@
-const fs = require('fs').promises;
 const path = require('path');
+const fs = require('fs').promises;
 const crypto = require('crypto');
-const sharp = require('sharp');
 const logger = require('../utils/logger');
-const constants = require('../config/constants');
-const imageModel = require('../models/imageModel');
+const DatabaseHelpers = require('../utils/databaseHelpers');
+const database = require('../models/database');
 
 class ImageService {
   constructor() {
-    this.imageDir = constants.IMAGES_DIR || path.join(__dirname, '../../public/images/cells');
-    this.thumbnailsDir = path.join(this.imageDir, 'thumbnails');
-    this.avatarsDir = path.join(path.dirname(this.imageDir), 'avatars');
+    this.dbHelpers = new DatabaseHelpers(database);
+    this.uploadDir = path.join(process.cwd(), 'uploads', 'images');
+    this.maxFileSize = 5 * 1024 * 1024; // 5MB
+    this.allowedMimeTypes = [
+      'image/jpeg',
+      'image/jpg', 
+      'image/png',
+      'image/gif',
+      'image/webp',
+      'image/svg+xml'
+    ];
+    this.allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'];
     
-    // Ensure directories exist
-    this.ensureDirectories();
+    // Ensure upload directory exists
+    this.ensureUploadDir();
   }
 
   /**
-   * Ensure the necessary directories exist
+   * Ensure upload directory exists
    */
-  async ensureDirectories() {
+  async ensureUploadDir() {
     try {
-      await fs.mkdir(this.imageDir, { recursive: true });
-      await fs.mkdir(this.thumbnailsDir, { recursive: true });
-      await fs.mkdir(this.avatarsDir, { recursive: true });
-      
-      logger.debug('Image directories created/verified');
+      await fs.mkdir(this.uploadDir, { recursive: true });
+      logger.image.debug('Upload directory ensured', { uploadDir: this.uploadDir });
     } catch (error) {
-      logger.error('Failed to create image directories', { error: error.message });
-      throw error;
+      logger.image.error('Failed to create upload directory', {
+        error: error.message,
+        uploadDir: this.uploadDir
+      });
     }
   }
 
   /**
-   * Upload and process an image
-   * @param {Object} fileData - File data object
-   * @param {number} userId - User ID
-   * @param {Object} options - Processing options
+   * Validate image URL
+   * @param {string} url - Image URL to validate
+   * @returns {Object} - Validation result
+   */
+  validateImageUrl(url) {
+    if (!url || typeof url !== 'string') {
+      return { valid: false, error: 'URL is required' };
+      }
+      
+    // Check for data URI (base64 encoded image)
+    const dataUriRegex = /^data:image\/([a-zA-Z]*);base64,([^"]*)/;
+    const dataUriMatch = url.match(dataUriRegex);
+    
+    if (dataUriMatch) {
+      const mimeType = `image/${dataUriMatch[1]}`;
+      const base64Data = dataUriMatch[2];
+      
+      // Validate MIME type
+      if (!this.allowedMimeTypes.includes(mimeType)) {
+        return { 
+          valid: false, 
+          error: `Unsupported image type: ${mimeType}. Allowed types: ${this.allowedMimeTypes.join(', ')}` 
+        };
+      }
+      
+      // Estimate file size (base64 is ~4/3 larger than binary)
+      const estimatedSize = (base64Data.length * 3) / 4;
+      if (estimatedSize > this.maxFileSize) {
+        return { 
+          valid: false, 
+          error: `Image too large. Maximum size: ${this.maxFileSize / 1024 / 1024}MB` 
+        };
+      }
+      
+      return { 
+        valid: true, 
+        type: 'data_uri', 
+        mimeType, 
+        estimatedSize 
+      };
+    }
+
+    // Check for HTTP(S) URL
+    const httpUrlRegex = /^https?:\/\/.*\.(jpg|jpeg|png|gif|webp|svg)(\?.*)?$/i;
+    if (httpUrlRegex.test(url)) {
+      return { 
+        valid: true, 
+        type: 'url',
+        url 
+      };
+    }
+
+    return { 
+      valid: false, 
+      error: 'Invalid image URL format. Must be a valid HTTP(S) URL or data URI' 
+    };
+      }
+      
+  /**
+   * Process and save uploaded image
+   * @param {string} dataUri - Base64 data URI
+   * @param {string} userId - User ID uploading the image
    * @returns {Object} - Processed image info
    */
-  async uploadImage(fileData, userId, options = {}) {
-    const { 
-      purpose = 'cell', // 'cell', 'avatar'
-      thumbnail = true,
-      resize = true,
-      maxWidth = 1200,
-      maxHeight = 1200,
-      quality = 80
-    } = options;
-    
+  async processUploadedImage(dataUri, userId) {
     try {
-      // Validate file
-      if (!fileData || !fileData.buffer) {
-        throw new Error('No file provided');
+      const validation = this.validateImageUrl(dataUri);
+      
+      if (!validation.valid) {
+        throw new Error(validation.error);
       }
-      
-      // Get file info
-      const buffer = fileData.buffer;
-      const originalName = fileData.originalname || 'image.jpg';
-      const mimetype = fileData.mimetype;
-      const size = buffer.length;
-      
-      // Validate mimetype
-      if (!constants.ALLOWED_MIME_TYPES.includes(mimetype)) {
-        throw new Error(`Invalid file type: ${mimetype}`);
+
+      if (validation.type !== 'data_uri') {
+        throw new Error('Only data URI uploads are supported for processing');
       }
-      
-      // Validate file size
-      if (size > constants.MAX_FILE_SIZE) {
-        throw new Error('File too large, max size is 50MB');
-      }
-      
-      // Generate a unique filename
-      const ext = path.extname(originalName).toLowerCase();
-      const timestamp = Date.now();
-      const hash = crypto.randomBytes(8).toString('hex');
-      const filename = `${timestamp}-${hash}${ext}`;
-      
-      // Determine the target directory
-      let targetDir = this.imageDir;
-      if (purpose === 'avatar') {
-        targetDir = this.avatarsDir;
-      }
-      
-      // Process the image with Sharp
-      const imageInfo = await sharp(buffer).metadata();
-      
-      let processedBuffer = buffer;
-      let width = imageInfo.width;
-      let height = imageInfo.height;
-      
-      // Resize if needed
-      if (resize && (width > maxWidth || height > maxHeight)) {
-        const resized = await sharp(buffer)
-          .resize({
-            width: Math.min(width, maxWidth),
-            height: Math.min(height, maxHeight),
-            fit: 'inside',
-            withoutEnlargement: true
-          })
-          .toBuffer();
+
+      // Extract data from data URI
+      const dataUriMatch = dataUri.match(/^data:image\/([a-zA-Z]*);base64,([^"]*)/);
+      const mimeType = `image/${dataUriMatch[1]}`;
+      const base64Data = dataUriMatch[2];
+      const buffer = Buffer.from(base64Data, 'base64');
         
-        processedBuffer = resized;
-        
-        // Update dimensions
-        const resizedInfo = await sharp(resized).metadata();
-        width = resizedInfo.width;
-        height = resizedInfo.height;
+      // Generate unique filename
+      const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+      const extension = this.getExtensionFromMimeType(mimeType);
+      const filename = `${hash}${extension}`;
+      const filePath = path.join(this.uploadDir, filename);
+
+      // Check if file already exists
+      const existingImage = await this.getImageByFilename(filename);
+      if (existingImage) {
+        logger.image.debug('Image already exists, returning existing record', {
+          filename,
+          existingId: existingImage.id
+        });
+        return {
+          id: existingImage.id,
+          filename: existingImage.filename,
+          path: existingImage.path,
+          url: `/api/images/${existingImage.filename}`,
+          size: existingImage.size,
+          mimeType: existingImage.mime_type
+        };
       }
-      
-      // Save the processed image
-      const imagePath = path.join(targetDir, filename);
-      await fs.writeFile(imagePath, processedBuffer);
-      
-      // Generate thumbnail if requested
-      let thumbnailPath = null;
-      if (thumbnail) {
-        const thumbnailBuffer = await sharp(processedBuffer)
-          .resize({
-            width: 300,
-            height: 300,
-            fit: 'inside',
-            withoutEnlargement: true
-          })
-          .toBuffer();
-        
-        thumbnailPath = path.join(this.thumbnailsDir, filename);
-        await fs.writeFile(thumbnailPath, thumbnailBuffer);
-      }
-      
-      // Save to database
-      const imageRecord = await imageModel.createImage({
-        userId,
+
+      // Save file to disk
+      await fs.writeFile(filePath, buffer);
+
+      // Save image record to database
+      const imageRecord = await this.dbHelpers.insertRecord('images', {
+        user_id: userId,
         filename,
-        originalFilename: originalName,
-        mimeType: mimetype,
-        size,
-        width,
-        height,
-        path: path.relative(path.join(__dirname, '../../public'), imagePath),
-        thumbnailPath: thumbnailPath ? path.relative(path.join(__dirname, '../../public'), thumbnailPath) : null,
+        original_filename: `upload_${Date.now()}${extension}`,
+        mime_type: mimeType,
+        size: buffer.length,
+        path: filePath,
         metadata: JSON.stringify({
-          purpose,
-          timestamp,
-          processed: resize,
-          quality
+          uploaded_at: new Date().toISOString(),
+          hash
         })
+      }, 'Image');
+
+      logger.image.info('Image uploaded and processed', {
+        imageId: imageRecord.id,
+        filename,
+        size: buffer.length,
+        mimeType,
+        userId
       });
       
       return {
         id: imageRecord.id,
         filename,
-        path: imageRecord.path,
-        thumbnailPath: imageRecord.thumbnail_path,
-        width,
-        height,
-        size,
-        url: `/${imageRecord.path}`,
-        thumbnailUrl: imageRecord.thumbnail_path ? `/${imageRecord.thumbnail_path}` : null
+        path: filePath,
+        url: `/api/images/${filename}`,
+        size: buffer.length,
+        mimeType
       };
+
     } catch (error) {
-      logger.error('Failed to upload image', { 
+      logger.image.error('Failed to process uploaded image', {
         error: error.message,
-        userId,
-        filename: fileData?.originalname
+        userId
       });
       throw error;
     }
+  }
+
+  /**
+   * Get image by filename
+   * @param {string} filename - Image filename
+   * @returns {Object|null} - Image record or null
+   */
+  async getImageByFilename(filename) {
+    return await this.dbHelpers.getRecord(
+      'SELECT * FROM images WHERE filename = ?',
+      [filename],
+      'get image by filename',
+      'Image'
+    );
   }
 
   /**
    * Get image by ID
    * @param {number} imageId - Image ID
-   * @returns {Object} - Image info
+   * @returns {Object|null} - Image record or null
    */
-  async getImage(imageId) {
-    try {
-      const image = await imageModel.getImageById(imageId);
-      
-      if (!image) {
-        throw new Error('Image not found');
-      }
-      
-      return {
-        id: image.id,
-        filename: image.filename,
-        path: image.path,
-        thumbnailPath: image.thumbnail_path,
-        width: image.width,
-        height: image.height,
-        size: image.size,
-        url: `/${image.path}`,
-        thumbnailUrl: image.thumbnail_path ? `/${image.thumbnail_path}` : null,
-        metadata: image.metadata ? JSON.parse(image.metadata) : {},
-        createdAt: image.created_at,
-        userId: image.user_id
-      };
-    } catch (error) {
-      logger.error('Failed to get image', { 
-        error: error.message,
-        imageId
-      });
-      throw error;
-    }
+  async getImageById(imageId) {
+    return await this.dbHelpers.getRecord(
+      'SELECT * FROM images WHERE id = ?',
+      [imageId],
+      'get image by ID',
+      'Image'
+    );
   }
 
   /**
-   * Get all images for a user
-   * @param {number} userId - User ID
-   * @param {Object} options - Filter options
-   * @returns {Array} - Array of images
+   * Get images for a user
+   * @param {string} userId - User ID
+   * @param {Object} options - Query options
+   * @returns {Object} - Paginated images
    */
   async getUserImages(userId, options = {}) {
-    try {
-      const { 
-        limit = 50, 
-        offset = 0,
-        purpose
-      } = options;
-      
-      const images = await imageModel.getUserImages(userId, { limit, offset, purpose });
-      
-      return images.map(image => ({
-        id: image.id,
-        filename: image.filename,
-        path: image.path,
-        thumbnailPath: image.thumbnail_path,
-        width: image.width,
-        height: image.height,
-        size: image.size,
-        url: `/${image.path}`,
-        thumbnailUrl: image.thumbnail_path ? `/${image.thumbnail_path}` : null,
-        metadata: image.metadata ? JSON.parse(image.metadata) : {},
-        createdAt: image.created_at
-      }));
-    } catch (error) {
-      logger.error('Failed to get user images', { 
-        error: error.message,
-        userId
-      });
-      throw error;
-    }
+    return await this.dbHelpers.getPaginatedRecords('images', {
+      conditions: { user_id: userId },
+      orderBy: 'created_at DESC',
+      ...options
+    }, 'Image');
   }
 
   /**
    * Delete an image
    * @param {number} imageId - Image ID
-   * @param {number} userId - User ID (for permission check)
+   * @param {string} userId - User ID (for ownership check)
    * @returns {boolean} - Success status
    */
   async deleteImage(imageId, userId) {
     try {
-      // Get image info
-      const image = await imageModel.getImageById(imageId);
+      const image = await this.getImageById(imageId);
       
       if (!image) {
-        throw new Error('Image not found');
+        return false;
       }
       
-      // Check ownership or admin permission
+      // Check ownership
       if (image.user_id !== userId) {
-        const userModel = require('../models/userModel');
-        const isAdmin = await userModel.isAdmin(userId);
-        
-        if (!isAdmin) {
           throw new Error('Permission denied');
         }
-      }
-      
-      // Delete physical files
-      const basePath = path.join(__dirname, '../../public');
-      
+
+      // Delete file from disk
       try {
-        if (image.path) {
-          await fs.unlink(path.join(basePath, image.path));
-        }
-        
-        if (image.thumbnail_path) {
-          await fs.unlink(path.join(basePath, image.thumbnail_path));
-        }
-      } catch (fileError) {
-        logger.warn('Could not delete image files', {
-          error: fileError.message,
-          imageId,
-          path: image.path
+        await fs.unlink(image.path);
+        logger.image.debug('Image file deleted from disk', { 
+          imageId, 
+          path: image.path 
         });
+      } catch (fileError) {
+        logger.image.warn('Failed to delete image file from disk', {
+          imageId,
+          path: image.path,
+          error: fileError.message
+        });
+        // Continue with database deletion even if file deletion fails
       }
       
-      // Delete from database
-      return await imageModel.deleteImage(imageId);
+      // Delete record from database
+      const deletedRows = await this.dbHelpers.deleteRecord('images', { id: imageId }, 'Image');
+      
+      if (deletedRows > 0) {
+        logger.image.info('Image deleted successfully', { imageId, userId });
+        return true;
+      }
+
+      return false;
     } catch (error) {
-      logger.error('Failed to delete image', { 
+      logger.image.error('Failed to delete image', {
         error: error.message,
         imageId,
         userId
       });
       throw error;
+    }
+  }
+
+  /**
+   * Get file extension from MIME type
+   * @param {string} mimeType - MIME type
+   * @returns {string} - File extension
+   */
+  getExtensionFromMimeType(mimeType) {
+    const mimeToExt = {
+      'image/jpeg': '.jpg',
+      'image/jpg': '.jpg',
+      'image/png': '.png',
+      'image/gif': '.gif',
+      'image/webp': '.webp',
+      'image/svg+xml': '.svg'
+    };
+    
+    return mimeToExt[mimeType] || '.jpg';
+  }
+
+  /**
+   * Clean up orphaned images (images not referenced by any cells)
+   * @returns {number} - Number of images cleaned up
+   */
+  async cleanupOrphanedImages() {
+    try {
+      // Find images not referenced by any cells
+      const orphanedImages = await this.dbHelpers.getRecords(`
+        SELECT i.* FROM images i
+        LEFT JOIN cells c ON c.value = '/api/images/' || i.filename AND c.type = 'image'
+        WHERE c.id IS NULL
+        AND i.created_at < datetime('now', '-7 days')
+      `, [], 'find orphaned images', 'Image');
+
+      let cleanedCount = 0;
+      
+      for (const image of orphanedImages) {
+        try {
+          // Delete file from disk
+          await fs.unlink(image.path);
+          
+          // Delete from database
+          await this.dbHelpers.deleteRecord('images', { id: image.id }, 'Image');
+          
+          cleanedCount++;
+          
+          logger.image.debug('Orphaned image cleaned up', {
+            imageId: image.id,
+            filename: image.filename
+          });
+        } catch (error) {
+          logger.image.warn('Failed to clean up orphaned image', {
+            imageId: image.id,
+            filename: image.filename,
+            error: error.message
+          });
+        }
+      }
+
+      if (cleanedCount > 0) {
+        logger.image.info('Orphaned images cleanup completed', {
+          cleanedCount,
+          totalFound: orphanedImages.length
+        });
+      }
+
+      return cleanedCount;
+    } catch (error) {
+      logger.image.error('Failed to cleanup orphaned images', {
+        error: error.message
+      });
+      return 0;
+    }
+  }
+
+  /**
+   * Get image statistics
+   * @returns {Object} - Image statistics
+   */
+  async getImageStats() {
+    try {
+      const stats = await this.dbHelpers.getRecord(`
+        SELECT 
+          COUNT(*) as total_images,
+          SUM(size) as total_size,
+          AVG(size) as average_size,
+          COUNT(DISTINCT user_id) as unique_users
+        FROM images
+      `, [], 'get image statistics', 'Image');
+
+      return {
+        totalImages: stats.total_images || 0,
+        totalSize: stats.total_size || 0,
+        averageSize: Math.round(stats.average_size || 0),
+        uniqueUsers: stats.unique_users || 0,
+        maxFileSize: this.maxFileSize,
+        allowedTypes: this.allowedMimeTypes
+      };
+    } catch (error) {
+      logger.image.error('Failed to get image statistics', {
+        error: error.message
+      });
+      return {
+        totalImages: 0,
+        totalSize: 0,
+        averageSize: 0,
+        uniqueUsers: 0,
+        maxFileSize: this.maxFileSize,
+        allowedTypes: this.allowedMimeTypes
+      };
     }
   }
 }
