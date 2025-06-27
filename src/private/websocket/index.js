@@ -1,288 +1,268 @@
-const socketio = require('socket.io');
-const logger = require('../utils/logger');
-const boardHandler = require('./handlers/boardHandler');
-const chatHandler = require('./handlers/chatHandler');
-const notificationHandler = require('./handlers/notificationHandler');
-const sessionModel = require('../models/sessionModel');
+// WebSocket Server Setup with Socket.IO
+// Provides real-time updates for board changes, chat messages, and notifications
 
-/**
- * WebSocket server class
- */
+const { Server } = require('socket.io');
+const jwt = require('jsonwebtoken');
+const sharedConstants = require('../../../shared/constants.js');
+const logger = require('../utils/logger.js');
+
+// Import WebSocket handlers
+const boardHandler = require('./handlers/boardHandler.js');
+const chatHandler = require('./handlers/chatHandler.js');
+const notificationHandler = require('./handlers/notificationHandler.js');
+
 class WebSocketServer {
   constructor() {
     this.io = null;
-    this.activeRooms = new Map(); // boardId -> count of users
-    this.userSockets = new Map(); // userId -> list of socket IDs
+    this.connectedUsers = new Map(); // userId -> socket info
+    this.boardRooms = new Map(); // boardId -> Set of socketIds
   }
 
-  /**
-   * Initialize WebSocket server
-   * @param {Object} httpServer - HTTP server to attach to
-   */
-  initialize(httpServer) {
-    this.io = socketio(httpServer, {
+  initialize(server) {
+    this.io = new Server(server, {
       cors: {
-        origin: process.env.SITE_URL || '*',
-        methods: ['GET', 'POST'],
+        origin: process.env.FRONTEND_URL || "http://localhost:3001",
+        methods: ["GET", "POST"],
         credentials: true
-      }
+      },
+      pingTimeout: sharedConstants.WEBSOCKET.PING_TIMEOUT,
+      pingInterval: sharedConstants.WEBSOCKET.PING_INTERVAL,
+      transports: ['websocket', 'polling']
     });
 
+    this.setupMiddleware();
+    this.setupEventHandlers();
+    
     logger.info('WebSocket server initialized');
-    
-    // Set up middleware for authentication
-    this.setupAuthentication();
-    
-    // Set up connection handler
-    this.setupConnectionHandler();
-    
     return this.io;
   }
 
-  /**
-   * Set up authentication middleware
-   */
-  setupAuthentication() {
+  setupMiddleware() {
+    // Authentication middleware
     this.io.use(async (socket, next) => {
       try {
-        const token = socket.handshake.auth.token || 
-                     socket.handshake.query.token;
+        const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace('Bearer ', '');
         
         if (!token) {
-          return next(new Error('Authentication failed: No token provided'));
+          // Allow anonymous connections for public boards
+          socket.user = { isAnonymous: true };
+          return next();
         }
+
+        // Verify session token (you'll need to implement session verification)
+        const sessionModel = require('../models/sessionModel.js');
+        const session = await sessionModel.getByToken(token);
         
-        // Verify token with session model
-        const user = await sessionModel.verifySession(token);
+        if (!session || new Date(session.expiresAt) < new Date()) {
+          socket.user = { isAnonymous: true };
+          return next();
+        }
+
+        const userModel = require('../models/userModel.js');
+        const user = await userModel.getById(session.userId);
         
         if (!user) {
-          return next(new Error('Authentication failed: Invalid token'));
+          socket.user = { isAnonymous: true };
+          return next();
         }
-        
-        // Store user data in socket
-        socket.user = user;
-        
+
+        socket.user = {
+          userId: user.id,
+          username: user.username,
+          isAdmin: user.isAdmin,
+          isAnonymous: false
+        };
+
         next();
       } catch (error) {
-        logger.error('WebSocket authentication error', {
-          error: error.message,
-          ip: socket.handshake.address
-        });
-        next(new Error('Authentication error'));
+        logger.error('WebSocket authentication error:', error);
+        socket.user = { isAnonymous: true };
+        next();
       }
+    });
+
+    // Request ID middleware for tracking
+    this.io.use((socket, next) => {
+      socket.requestId = `ws_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      next();
     });
   }
 
-  /**
-   * Set up connection handler
-   */
-  setupConnectionHandler() {
+  setupEventHandlers() {
     this.io.on('connection', (socket) => {
-      const userId = socket.user.id;
-      const username = socket.user.username;
-      
-      logger.info('WebSocket client connected', {
-        userId,
-        username,
-        socketId: socket.id
+      logger.info(`WebSocket connection established: ${socket.id}`, {
+        userId: socket.user?.userId || 'anonymous',
+        requestId: socket.requestId
       });
-      
-      // Track user's sockets
-      if (!this.userSockets.has(userId)) {
-        this.userSockets.set(userId, new Set());
+
+      // Store connected user info
+      if (socket.user && !socket.user.isAnonymous) {
+        this.connectedUsers.set(socket.user.userId, {
+          socketId: socket.id,
+          username: socket.user.username,
+          connectedAt: Date.now()
+        });
       }
-      this.userSockets.get(userId).add(socket.id);
-      
-      // Set up event handlers
-      this.registerEventHandlers(socket);
-      
-      // Handle disconnect
-      socket.on('disconnect', () => {
-        this.handleDisconnect(socket);
+
+      // Board-related events
+      socket.on('board:join', async (data) => {
+        await boardHandler.handleJoinBoard(socket, data, this);
       });
-    });
-  }
 
-  /**
-   * Register event handlers
-   * @param {Object} socket - Socket instance
-   */
-  registerEventHandlers(socket) {
-    // Board event handlers
-    boardHandler.registerHandlers(socket, this);
-    
-    // Chat event handlers
-    chatHandler.registerHandlers(socket, this);
-    
-    // Notification event handlers
-    notificationHandler.registerHandlers(socket, this);
-  }
+      socket.on('board:leave', async (data) => {
+        await boardHandler.handleLeaveBoard(socket, data, this);
+      });
 
-  /**
-   * Handle client disconnect
-   * @param {Object} socket - Socket instance
-   */
-  handleDisconnect(socket) {
-    const userId = socket.user?.id;
-    const username = socket.user?.username;
-    
-    logger.info('WebSocket client disconnected', {
-      userId,
-      username,
-      socketId: socket.id
-    });
-    
-    // Clean up user's active rooms
-    for (const room of socket.rooms) {
-      if (room !== socket.id) { // ignore default room (socket.id)
-        const roomId = room;
-        if (this.activeRooms.has(roomId)) {
-          const count = this.activeRooms.get(roomId) - 1;
-          if (count <= 0) {
-            this.activeRooms.delete(roomId);
-          } else {
-            this.activeRooms.set(roomId, count);
-          }
-          
-          // Notify others that user left
-          socket.to(roomId).emit('user:leave', {
-            userId,
-            username,
-            activeUsers: this.getActiveUsersInRoom(roomId)
-          });
+      socket.on('cell:update', async (data) => {
+        await boardHandler.handleCellUpdate(socket, data, this);
+      });
+
+      socket.on('cell:mark', async (data) => {
+        await boardHandler.handleCellMark(socket, data, this);
+      });
+
+      // Chat-related events
+      socket.on('chat:message', async (data) => {
+        await chatHandler.handleChatMessage(socket, data, this);
+      });
+
+      socket.on('chat:typing', async (data) => {
+        await chatHandler.handleTyping(socket, data, this);
+      });
+
+      // Notification events
+      socket.on('notification:mark_read', async (data) => {
+        await notificationHandler.handleMarkRead(socket, data, this);
+      });
+
+      // Generic error handling
+      socket.on('error', (error) => {
+        logger.error('Socket error:', error, {
+          socketId: socket.id,
+          userId: socket.user?.userId,
+          requestId: socket.requestId
+        });
+        
+        socket.emit(sharedConstants.WEBSOCKET.EVENTS.ERROR, {
+          error: 'Socket error occurred',
+          code: sharedConstants.ERROR_CODES.WEBSOCKET_ERROR
+        });
+      });
+
+      // Disconnect handling
+      socket.on('disconnect', (reason) => {
+        logger.info(`WebSocket disconnected: ${socket.id}`, {
+          reason,
+          userId: socket.user?.userId || 'anonymous',
+          requestId: socket.requestId
+        });
+
+        // Clean up user connection tracking
+        if (socket.user && !socket.user.isAnonymous) {
+          this.connectedUsers.delete(socket.user.userId);
         }
-      }
-    }
-    
-    // Remove user's socket from tracking
-    if (userId && this.userSockets.has(userId)) {
-      this.userSockets.get(userId).delete(socket.id);
-      if (this.userSockets.get(userId).size === 0) {
-        this.userSockets.delete(userId);
-      }
-    }
+
+        // Clean up board room memberships
+        this.boardRooms.forEach((sockets, boardId) => {
+          if (sockets.has(socket.id)) {
+            sockets.delete(socket.id);
+            if (sockets.size === 0) {
+              this.boardRooms.delete(boardId);
+            } else {
+              // Notify other users in the board that this user left
+              this.io.to(boardId).emit(sharedConstants.WEBSOCKET.EVENTS.USER_LEFT, {
+                boardId,
+                user: {
+                  userId: socket.user?.userId,
+                  username: socket.user?.username || 'Anonymous'
+                }
+              });
+            }
+          }
+        });
+      });
+    });
   }
 
-  /**
-   * Join a board room
-   * @param {Object} socket - Socket instance
-   * @param {string} boardId - Board ID
-   */
+  // Utility methods for handlers
   joinBoardRoom(socket, boardId) {
-    const roomId = `board:${boardId}`;
-    const userId = socket.user.id;
-    const username = socket.user.username;
+    socket.join(boardId);
     
-    // Join the room
-    socket.join(roomId);
-    
-    // Increment room count
-    this.activeRooms.set(roomId, (this.activeRooms.get(roomId) || 0) + 1);
-    
-    logger.debug('User joined board room', {
-      userId,
-      username,
+    if (!this.boardRooms.has(boardId)) {
+      this.boardRooms.set(boardId, new Set());
+    }
+    this.boardRooms.get(boardId).add(socket.id);
+
+    // Notify other users in the board
+    socket.to(boardId).emit(sharedConstants.WEBSOCKET.EVENTS.USER_JOINED, {
       boardId,
-      socketId: socket.id
+      user: {
+        userId: socket.user?.userId,
+        username: socket.user?.username || 'Anonymous'
+      }
     });
-    
-    // Notify others in the room
-    socket.to(roomId).emit('user:join', {
-      userId,
-      username,
-      activeUsers: this.getActiveUsersInRoom(roomId)
-    });
-    
-    return this.getActiveUsersInRoom(roomId);
   }
 
-  /**
-   * Leave a board room
-   * @param {Object} socket - Socket instance
-   * @param {string} boardId - Board ID
-   */
   leaveBoardRoom(socket, boardId) {
-    const roomId = `board:${boardId}`;
-    const userId = socket.user.id;
-    const username = socket.user.username;
+    socket.leave(boardId);
     
-    // Leave the room
-    socket.leave(roomId);
-    
-    // Decrement room count
-    if (this.activeRooms.has(roomId)) {
-      const count = this.activeRooms.get(roomId) - 1;
-      if (count <= 0) {
-        this.activeRooms.delete(roomId);
-      } else {
-        this.activeRooms.set(roomId, count);
+    if (this.boardRooms.has(boardId)) {
+      this.boardRooms.get(boardId).delete(socket.id);
+      if (this.boardRooms.get(boardId).size === 0) {
+        this.boardRooms.delete(boardId);
       }
     }
-    
-    logger.debug('User left board room', {
-      userId,
-      username,
+
+    // Notify other users in the board
+    socket.to(boardId).emit(sharedConstants.WEBSOCKET.EVENTS.USER_LEFT, {
       boardId,
-      socketId: socket.id
-    });
-    
-    // Notify others in the room
-    socket.to(roomId).emit('user:leave', {
-      userId,
-      username,
-      activeUsers: this.getActiveUsersInRoom(roomId)
+      user: {
+        userId: socket.user?.userId,
+        username: socket.user?.username || 'Anonymous'
+      }
     });
   }
 
-  /**
-   * Get active users in a room
-   * @param {string} roomId - Room ID
-   * @returns {Array} - Array of active users
-   */
-  getActiveUsersInRoom(roomId) {
-    const room = this.io.sockets.adapter.rooms.get(roomId);
-    if (!room) return [];
+  // Broadcast to specific board
+  toBoardRoom(boardId, event, data) {
+    this.io.to(boardId).emit(event, data);
+  }
+
+  // Broadcast to specific user
+  toUser(userId, event, data) {
+    const userConnection = this.connectedUsers.get(userId);
+    if (userConnection) {
+      this.io.to(userConnection.socketId).emit(event, data);
+    }
+  }
+
+  // Get connected users for a board
+  getBoardUsers(boardId) {
+    const socketIds = this.boardRooms.get(boardId) || new Set();
+    const users = [];
     
-    const activeUsers = [];
-    for (const socketId of room) {
+    socketIds.forEach(socketId => {
       const socket = this.io.sockets.sockets.get(socketId);
       if (socket && socket.user) {
-        activeUsers.push({
-          id: socket.user.id,
-          username: socket.user.username
+        users.push({
+          userId: socket.user.userId,
+          username: socket.user.username || 'Anonymous',
+          isAnonymous: socket.user.isAnonymous
         });
       }
-    }
+    });
     
-    return activeUsers;
+    return users;
   }
 
-  /**
-   * Broadcast to all user's sockets
-   * @param {number} userId - User ID
-   * @param {string} event - Event name
-   * @param {Object} data - Event data
-   */
-  broadcastToUser(userId, event, data) {
-    if (!this.userSockets.has(userId)) return;
-    
-    for (const socketId of this.userSockets.get(userId)) {
-      const socket = this.io.sockets.sockets.get(socketId);
-      if (socket) {
-        socket.emit(event, data);
-      }
-    }
-  }
-
-  /**
-   * Broadcast to a board room
-   * @param {string} boardId - Board ID
-   * @param {string} event - Event name
-   * @param {Object} data - Event data
-   */
-  broadcastToBoard(boardId, event, data) {
-    const roomId = `board:${boardId}`;
-    this.io.to(roomId).emit(event, data);
+  // Broadcast server status/maintenance messages
+  broadcastSystem(message, level = 'info') {
+    this.io.emit(sharedConstants.WEBSOCKET.EVENTS.NOTIFICATION, {
+      type: 'system',
+      message,
+      level,
+      timestamp: Date.now()
+    });
   }
 }
 

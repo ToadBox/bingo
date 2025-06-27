@@ -13,11 +13,13 @@ const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
 const { isAuthenticated } = require('./middleware/auth');
 const constants = require('./config/constants');
+const sharedConstants = require('../../shared/constants.js');
 const boardService = require('./services/boardService');
 const database = require('./models/database');
 const userRoutes = require('./routes/users');
 const notificationRoutes = require('./routes/notifications');
 const adminUsersRoutes = require('./routes/admin/users');
+const imageRoutes = require('./routes/images');
 const configLoader = require('./utils/configLoader');
 const chatRoutes = require('./routes/chat');
 const websocketServer = require('./websocket');
@@ -147,18 +149,60 @@ class Server {
             next();
         });
 
-        // Rate limiting
+        // Enhanced rate limiting with shared constants
         const apiLimiter = rateLimit({
-            windowMs: 15 * 60 * 1000,
-            max: 500,
-            message: 'Too many requests from this IP, please try again later.',
+            windowMs: sharedConstants.API.RATE_LIMIT_WINDOW_MS,
+            max: sharedConstants.API.RATE_LIMIT_MAX_REQUESTS,
+            message: {
+                error: sharedConstants.getErrorResponse('RATE_LIMIT_EXCEEDED').message,
+                code: sharedConstants.ERROR_CODES.RATE_LIMIT_EXCEEDED
+            },
             standardHeaders: true,
             legacyHeaders: false,
             trustProxy: true,
-            skip: (req) => req.ip === '127.0.0.1',
-            keyGenerator: (req) => req.ip + req.path
+            skip: (req) => req.ip === '127.0.0.1' || req.ip === '::1',
+            keyGenerator: (req) => `${req.ip}_${req.path}`,
+            handler: (req, res) => {
+                logger.warn('Rate limit exceeded', {
+                    ip: req.ip,
+                    path: req.path,
+                    userAgent: req.get('User-Agent')
+                });
+                
+                const response = sharedConstants.getErrorResponse('RATE_LIMIT_EXCEEDED', req.id);
+                res.status(429).json(response);
+            }
         });
+
+        // More restrictive limits for authentication endpoints
+        const authLimiter = rateLimit({
+            windowMs: 15 * 60 * 1000, // 15 minutes
+            max: 10, // 10 attempts per window
+            message: {
+                error: 'Too many authentication attempts, please try again later.',
+                code: sharedConstants.ERROR_CODES.RATE_LIMIT_EXCEEDED
+            },
+            standardHeaders: true,
+            legacyHeaders: false,
+            trustProxy: true,
+            keyGenerator: (req) => `auth_${req.ip}`,
+            handler: (req, res) => {
+                logger.warn('Auth rate limit exceeded', {
+                    ip: req.ip,
+                    path: req.path,
+                    userAgent: req.get('User-Agent')
+                });
+                
+                res.status(429).json({
+                    error: 'Too many authentication attempts, please try again later.',
+                    code: sharedConstants.ERROR_CODES.RATE_LIMIT_EXCEEDED,
+                    requestId: req.id
+                });
+            }
+        });
+
         this.app.use('/api/', apiLimiter);
+        this.app.use('/api/auth/', authLimiter);
 
         // Apply authentication middleware globally
         this.app.use(isAuthenticated);
@@ -220,6 +264,9 @@ class Server {
 
         // Admin routes
         this.app.use('/api/admin/users', adminUsersRoutes);
+
+        // Image routes
+        this.app.use('/api/images', imageRoutes);
 
         // Board view route
         this.app.get('/board/:boardId', (req, res) => {

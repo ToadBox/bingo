@@ -1,0 +1,106 @@
+{
+  "ERROR_CODES": {
+    "AUTH_REQUIRED": "AUTH_001",
+    "AUTH_INVALID": "AUTH_002", 
+    "AUTH_EXPIRED": "AUTH_003",
+    "AUTH_INSUFFICIENT_PERMISSIONS": "AUTH_004",
+    "VALIDATION_FAILED": "VAL_001",
+    "VALIDATION_MISSING_FIELD": "VAL_002",
+    "VALIDATION_INVALID_FORMAT": "VAL_003",
+    "RESOURCE_NOT_FOUND": "RES_001",
+    "RESOURCE_CONFLICT": "RES_002",
+    "RESOURCE_FORBIDDEN": "RES_003",
+    "RATE_LIMIT_EXCEEDED": "RATE_001",
+    "SERVER_ERROR": "SRV_001",
+    "DATABASE_ERROR": "DB_001",
+    "WEBSOCKET_ERROR": "WS_001"
+  },
+  "ERROR_MESSAGES": {
+    "AUTH_001": "Authentication required. Please log in.",
+    "AUTH_002": "Invalid credentials provided.",
+    "AUTH_003": "Session has expired. Please log in again.",
+    "AUTH_004": "Insufficient permissions for this action.",
+    "VAL_001": "Validation failed for the provided data.",
+    "VAL_002": "Required field is missing.",
+    "VAL_003": "Invalid format for the provided data.",
+    "RES_001": "The requested resource was not found.",
+    "RES_002": "Resource conflict detected.",
+    "RES_003": "Access to this resource is forbidden.",
+    "RATE_001": "Rate limit exceeded. Please try again later.",
+    "SRV_001": "An internal server error occurred.",
+    "DB_001": "Database operation failed.",
+    "WS_001": "WebSocket connection error."
+  },
+  "BOARD": {
+    "DEFAULT_SIZE": 5,
+    "MIN_SIZE": 3,
+    "MAX_SIZE": 9,
+    "DEFAULT_TITLE": "New Bingo Board",
+    "SLUG_MAX_LENGTH": 50,
+    "TITLE_MAX_LENGTH": 100,
+    "DESCRIPTION_MAX_LENGTH": 500,
+    "CODE_LENGTH": 6,
+    "PASSWORD_MIN_LENGTH": 4,
+    "PASSWORD_MAX_LENGTH": 12,
+    "MAX_VERSIONS": 50,
+    "AUTO_VERSION_THRESHOLD": 10
+  },
+  "IMAGE": {
+    "ALLOWED_EXTENSIONS": [".jpg", ".jpeg", ".png", ".gif", ".webp"],
+    "ALLOWED_MIME_TYPES": ["image/jpeg", "image/png", "image/gif", "image/webp"],
+    "MAX_FILE_SIZE": 52428800,
+    "COMPRESSION_THRESHOLD": 1048576,
+    "THUMBNAIL_WIDTH": 150,
+    "THUMBNAIL_HEIGHT": 150,
+    "MAX_WIDTH": 2048,
+    "MAX_HEIGHT": 2048
+  },
+  "VALIDATION": {
+    "USERNAME_MIN_LENGTH": 3,
+    "USERNAME_MAX_LENGTH": 30,
+    "USERNAME_PATTERN": "^[a-zA-Z0-9_-]+$",
+    "EMAIL_PATTERN": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+    "PASSWORD_MIN_LENGTH": 8,
+    "PASSWORD_MAX_LENGTH": 128,
+    "SITE_PASSWORD_MIN_LENGTH": 4,
+    "SITE_PASSWORD_MAX_LENGTH": 50
+  },
+  "WEBSOCKET": {
+    "EVENTS": {
+      "BOARD_UPDATED": "board:updated",
+      "CELL_MARKED": "cell:marked", 
+      "CELL_UNMARKED": "cell:unmarked",
+      "CELL_EDITED": "cell:edited",
+      "CHAT_MESSAGE": "chat:message",
+      "USER_JOINED": "user:joined",
+      "USER_LEFT": "user:left",
+      "NOTIFICATION": "notification",
+      "ERROR": "error"
+    },
+    "PING_INTERVAL": 30000,
+    "PING_TIMEOUT": 10000,
+    "RECONNECT_ATTEMPTS": 5,
+    "RECONNECT_DELAY": 1000
+  },
+  "API": {
+    "RATE_LIMIT_WINDOW_MS": 900000,
+    "RATE_LIMIT_MAX_REQUESTS": 500,
+    "RATE_LIMIT_SKIP_SUCCESSFUL_REQUESTS": false,
+    "REQUEST_TIMEOUT": 30000,
+    "VERSION": "v1"
+  },
+  "AUTH": {
+    "PROVIDERS": ["anonymous", "local", "google", "discord"],
+    "SESSION_EXPIRY": 2592000000,
+    "TOKEN_LENGTH": 64,
+    "APPROVAL_STATUSES": ["pending", "approved", "rejected"]
+  },
+  "CACHE": {
+    "TTL": 300000,
+    "MAX_ENTRIES": 1000
+  },
+  "PAGINATION": {
+    "DEFAULT_LIMIT": 20,
+    "MAX_LIMIT": 100
+  }
+}
