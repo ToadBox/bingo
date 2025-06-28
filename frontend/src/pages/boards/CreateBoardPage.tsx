@@ -16,16 +16,11 @@ const createBoardSchema = z.object({
   description: z.string()
     .max(500, 'Description must be less than 500 characters')
     .optional(),
-  createdByName: z.string()
-    .min(1, 'Creator name is required')
-    .max(50, 'Creator name must be less than 50 characters')
-    .optional(),
   isPublic: z.boolean(),
   size: z.number()
     .min(3, 'Board size must be at least 3x3')
     .max(9, 'Board size must be at most 9x9'),
   freeSpace: z.boolean(),
-  useServerName: z.boolean().optional(),
 })
 
 type CreateBoardFormData = z.infer<typeof createBoardSchema>
@@ -37,7 +32,6 @@ export default function CreateBoardPage() {
   const [isLoading, setIsLoading] = useState(false)
 
   const isAnonymous = user?.authProvider === 'anonymous'
-  const isAdmin = user?.isAdmin
 
   const {
     register,
@@ -50,19 +44,19 @@ export default function CreateBoardPage() {
     defaultValues: {
       title: '',
       description: '',
-      createdByName: isAnonymous ? '' : user?.username || '',
       isPublic: false,
       size: 5,
       freeSpace: true,
-      useServerName: false,
     }
   })
 
   const watchedSize = watch('size')
   const watchedIsPublic = watch('isPublic')
-  const watchedUseServerName = watch('useServerName')
 
   const onSubmit = async (data: CreateBoardFormData) => {
+    console.log('Creating board:', data.title)
+    console.log('Form data being sent:', data)
+    
     setIsLoading(true)
     try {
       const boardData = {
@@ -71,17 +65,14 @@ export default function CreateBoardPage() {
         isPublic: data.isPublic,
         size: data.size,
         freeSpace: data.freeSpace,
-        // Handle creator name based on user type
-        ...(isAnonymous && data.createdByName ? { createdByName: data.createdByName } : {}),
-        ...(isAdmin && data.useServerName ? { useServerName: true } : {}),
       }
 
+      console.log('Processed board data:', boardData)
+      
       const newBoard = await createBoard.mutateAsync(boardData)
       
-      // Navigate to the new board
-      const username = isAdmin && data.useServerName ? 'server' : 
-                     isAnonymous ? 'anonymous' : 
-                     user?.username || 'unknown'
+      // Navigate to the new board using unified URL structure
+      const username = user?.username || 'unknown'
       navigate(`/${username}/${newBoard.slug}`)
     } catch (error) {
       console.error('Failed to create board:', error)
@@ -149,6 +140,22 @@ export default function CreateBoardPage() {
         {/* Form */}
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+            {/* Form validation errors */}
+            {Object.keys(errors).length > 0 && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                <h3 className="text-red-800 font-medium mb-2">Please fix the following errors:</h3>
+                <ul className="text-red-700 text-sm space-y-1">
+                  {Object.entries(errors).map(([field, error]) => (
+                    <li key={field} className="flex items-start space-x-2">
+                      <span className="text-red-500">•</span>
+                      <span>
+                        <strong>{field === 'isPublic' ? 'Visibility' : field}:</strong> {error.message}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {/* Basic Info */}
             <div className="space-y-4">
               <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
@@ -181,45 +188,6 @@ export default function CreateBoardPage() {
               </div>
             </div>
 
-            {/* Creator Info */}
-            {(isAnonymous || isAdmin) && (
-              <div className="space-y-4">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-                  Creator Information
-                </h2>
-
-                {isAnonymous && (
-                  <Input
-                    {...register('createdByName')}
-                    label="Creator Name"
-                    placeholder="Enter your name or handle"
-                    error={errors.createdByName?.message}
-                    helpText="This will be displayed as the board creator"
-                  />
-                )}
-
-                {isAdmin && (
-                  <div className="space-y-3">
-                    <label className="flex items-center space-x-3">
-                      <input
-                        type="checkbox"
-                        {...register('useServerName')}
-                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                      />
-                      <div>
-                        <span className="text-sm font-medium text-gray-900 dark:text-white">
-                          Create as server board
-                        </span>
-                        <p className="text-xs text-gray-500 dark:text-gray-400">
-                          Board will appear as created by "server" instead of your username
-                        </p>
-                      </div>
-                    </label>
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* Board Settings */}
             <div className="space-y-4">
               <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
@@ -232,11 +200,14 @@ export default function CreateBoardPage() {
                   Visibility
                 </label>
                 <div className="space-y-2">
-                  <label className="flex items-center space-x-3">
+                  <label className="flex items-center space-x-3 cursor-pointer">
                     <input
                       type="radio"
-                      {...register('isPublic')}
-                      value="false"
+                      name="visibility"
+                      checked={!watchedIsPublic}
+                      onChange={() => {
+                        setValue('isPublic', false, { shouldValidate: true })
+                      }}
                       className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
                     />
                     <div className="flex items-center space-x-2">
@@ -251,11 +222,14 @@ export default function CreateBoardPage() {
                       </div>
                     </div>
                   </label>
-                  <label className="flex items-center space-x-3">
+                  <label className="flex items-center space-x-3 cursor-pointer">
                     <input
                       type="radio"
-                      {...register('isPublic')}
-                      value="true"
+                      name="visibility"
+                      checked={watchedIsPublic}
+                      onChange={() => {
+                        setValue('isPublic', true, { shouldValidate: true })
+                      }}
                       className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
                     />
                     <div className="flex items-center space-x-2">
@@ -313,7 +287,7 @@ export default function CreateBoardPage() {
             </div>
 
             {/* Submit */}
-            <div className="pt-4">
+            <div className="pt-4 space-y-2">
               <Button
                 type="submit"
                 variant="primary"
@@ -323,6 +297,8 @@ export default function CreateBoardPage() {
               >
                 {isLoading ? 'Creating Board...' : 'Create Board'}
               </Button>
+              
+
             </div>
           </form>
         </div>

@@ -43,6 +43,13 @@ auth:
       enabled: false  # Set to true and configure credentials in .env
       # Credentials: DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_BOT_TOKEN
       approvedGuilds: []  # Discord server IDs for auto-approval
+      guilds:  # Discord guild configuration for board features
+        # Example configuration:
+        # - id: "123456789012345678"
+        #   name: "My Discord Server"
+        #   boardsEnabled: true
+        #   defaultVisibility: "guild"  # public, private, guild
+        #   allowAnonymousBoards: true
 
 ## Board Configuration
 boards:
@@ -113,6 +120,26 @@ security:
     httpOnly: true
     sameSite: strict
     # secure: true (automatically set in production)
+
+## Memory Cache Configuration
+cache:
+  enabled: true
+  maxSizeMB: 2048              # Maximum cache size in MB (400MB default, can set to 5GB = 5120)
+  defaultTTL: 3600            # Default TTL in seconds (1 hour)
+  cleanupInterval: 300        # Cleanup interval in seconds (5 minutes)
+  strategies:
+    database: 
+      enabled: true
+      ttl: 1800               # 30 minutes for DB queries
+    sessions:
+      enabled: true  
+      ttl: 7200               # 2 hours for session data
+    boards:
+      enabled: true
+      ttl: 900                # 15 minutes for board data
+    static:
+      enabled: true
+      ttl: 3600               # 1 hour for static content
 
 ## Database Configuration  
 database:

@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
-const boardModel = require('../models/boardModel');
-const userModel = require('../models/userModel');
+const models = require('../services/modelRegistry');
+const BoardFormatterService = require('../services/boardFormatterService');
 const { isAuthenticated } = require('../middleware/auth');
 const { 
   createValidator, 
@@ -16,40 +16,24 @@ const {
   validateRequired 
 } = require('../utils/responseHelpers');
 
+// Helper functions for board creation
+const generateBoardCode = () => {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+};
+
+const generatePassword = (length = 6) => {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+};
+
 // Helper function to measure elapsed time
 const getElapsedMs = (start) => {
   const elapsed = process.hrtime(start);
   return elapsed[0] * 1000 + elapsed[1] / 1000000;
-};
-
-// Helper function to format board for frontend
-const formatBoard = (board, user) => {
-  const isAnonymous = user?.auth_provider === 'anonymous';
-  let boardUrl;
-  
-  if (board.creator_username) {
-    boardUrl = `/${board.creator_username}/${board.slug}`;
-  } else if (isAnonymous || board.createdByName) {
-    boardUrl = `/anonymous/${board.slug}`;
-  } else {
-    boardUrl = `/server/${board.slug}`;
-  }
-
-  return {
-      id: board.uuid,
-      title: board.title,
-      slug: board.slug,
-    createdBy: board.creator_username || board.createdByName || 'server',
-      createdAt: new Date(board.created_at).getTime(),
-      lastUpdated: new Date(board.last_updated).getTime(),
-      cellCount: board.cellCount || 0,
-      markedCount: board.markedCount || 0,
-      isPublic: !!board.is_public,
-      description: board.description,
-    url: boardUrl,
-    cells: board.cells || [],
-    settings: board.settings ? JSON.parse(board.settings) : {}
-  };
 };
 
 /**
@@ -74,7 +58,7 @@ router.get('/', validatePagination, asyncHandler(async (req, res) => {
   
   // Filter by username if specified
   if (username) {
-    const user = await userModel.getUserByUsername(username);
+    const user = await models.user.getUserByUsername(username);
     if (user) {
       options.userId = user.user_id;
     } else {
@@ -94,20 +78,10 @@ router.get('/', validatePagination, asyncHandler(async (req, res) => {
     }
   }
   
-  const result = await boardModel.getAllBoards(options);
+  const result = await models.board.getAllBoards(options);
   
   // Format boards for frontend compatibility
-  const formattedBoards = result.boards.map(board => ({
-    id: board.uuid,
-    title: board.title,
-    slug: board.slug,
-    createdBy: board.username || 'server',
-    createdAt: new Date(board.created_at).getTime(),
-    lastUpdated: new Date(board.last_updated).getTime(),
-    isPublic: !!board.is_public,
-    description: board.description,
-    settings: board.settings
-  }));
+  const formattedBoards = BoardFormatterService.formatBoards(result.boards, req.user, {}, req);
   
   logger.board.debug('Boards retrieved', {
     count: formattedBoards.length,
@@ -126,49 +100,66 @@ router.get('/', validatePagination, asyncHandler(async (req, res) => {
  * POST /boards - Create a new board
  */
 router.post('/', isAuthenticated, createValidator('board'), asyncHandler(async (req, res) => {
-  const { title, description = '', isPublic = false } = req.validated;
+  const { 
+    title, 
+    description = '', 
+    isPublic = false, 
+    size = 5, 
+    freeSpace = true, 
+    useServerName = false 
+  } = req.validated;
   const userId = req.user.user_id;
   
   // Get user info for board creation
-  const user = await userModel.getUserByUserId(userId);
+  const user = await models.user.getUserByUserId(userId);
   if (!user) {
     return sendError(res, 404, 'User not found', null, 'Board');
-    }
+  }
 
-    const boardData = {
+  // Determine the creator username (simplified logic)
+  let creatorUsername;
+  if (useServerName && req.user.is_admin) {
+    creatorUsername = 'server';
+  } else {
+    creatorUsername = user.username;
+  }
+
+  // Create board settings object
+  const settings = {
+    size,
+    freeSpace,
+    boardCode: generateBoardCode(),
+    // Only add password for anonymous private boards
+    ...(user.auth_provider === 'anonymous' && !isPublic ? { boardPassword: generatePassword() } : {})
+  };
+
+  const boardData = {
     title,
     description,
     isPublic,
     createdBy: userId,
-    createdByName: user.username
-    };
+    createdByName: creatorUsername, // This will be the unified username
+    settings: JSON.stringify(settings)
+  };
 
-    const board = await boardModel.createBoard(boardData);
+  const board = await models.board.createBoard(boardData);
 
-    if (!board) {
+  if (!board) {
     return sendError(res, 500, 'Failed to create board', null, 'Board');
-    }
+  }
 
-    // Format for frontend compatibility
-    const formattedBoard = {
-      id: board.uuid,
-      title: board.title,
-      slug: board.slug,
-    createdBy: user.username,
-      createdAt: new Date(board.created_at).getTime(),
-      lastUpdated: new Date(board.last_updated).getTime(),
-      isPublic: !!board.is_public,
-      description: board.description,
-    settings: board.settings,
-    cells: board.cells
-    };
+  // Format for frontend compatibility
+  const formattedBoard = BoardFormatterService.formatBoard(board, req.user, { includeCells: true }, req);
 
   logger.board.info('Board created successfully', {
-      boardId: board.uuid,
+    boardId: board.uuid,
     title: board.title,
     userId,
-    username: user.username
-    });
+    username: user.username,
+    creatorUsername,
+    size,
+    freeSpace
+  });
 
   return sendSuccess(res, formattedBoard, 201, 'Board');
 }, 'Board'));
@@ -180,7 +171,7 @@ router.get('/anonymous/:slug', isAuthenticated, asyncHandler(async (req, res) =>
   const { slug } = req.params;
   const startTime = process.hrtime();
   
-    const board = await boardModel.getBoardByAnonymousSlug(slug);
+    const board = await models.board.getBoardByAnonymousSlug(slug);
 
     if (!board) {
     logger.board.warn('Anonymous board not found', { slug });
@@ -197,7 +188,7 @@ router.get('/anonymous/:slug', isAuthenticated, asyncHandler(async (req, res) =>
     }
 
     // Format for frontend compatibility
-  const formattedBoard = formatBoard(board, req.user);
+  const formattedBoard = BoardFormatterService.formatBoard(board, req.user, {}, req);
 
   logger.board.info('Anonymous board retrieved successfully', {
       slug,
@@ -215,25 +206,14 @@ router.get('/anonymous/:slug', isAuthenticated, asyncHandler(async (req, res) =>
 router.get('/:username/:slug', asyncHandler(async (req, res) => {
   const { username, slug } = req.params;
   
-    const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
+    const board = await models.board.getBoardByUsernameAndSlug(username, slug);
 
     if (!board) {
     return sendError(res, 404, 'Board not found', null, 'Board');
     }
 
     // Format for frontend compatibility
-    const formattedBoard = {
-      id: board.uuid,
-      title: board.title,
-      slug: board.slug,
-    createdBy: username,
-      createdAt: new Date(board.created_at).getTime(),
-      lastUpdated: new Date(board.last_updated).getTime(),
-      isPublic: !!board.is_public,
-      description: board.description,
-    settings: board.settings,
-    cells: board.cells
-    };
+    const formattedBoard = BoardFormatterService.formatBoard(board, req.user, {}, req);
 
   logger.board.debug('Board retrieved by username and slug', {
       username,
@@ -252,7 +232,7 @@ router.put('/:username/:slug', isAuthenticated, createValidator('board', { allow
   const { title, description, isPublic } = req.validated;
   const userId = req.user.user_id;
   
-    const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
+    const board = await models.board.getBoardByUsernameAndSlug(username, slug);
 
     if (!board) {
     return sendError(res, 404, 'Board not found', null, 'Board');
@@ -268,24 +248,14 @@ router.put('/:username/:slug', isAuthenticated, createValidator('board', { allow
   if (description !== undefined) updates.description = description;
   if (isPublic !== undefined) updates.is_public = isPublic;
 
-    const updatedBoard = await boardModel.updateBoard(board.id, updates);
+    const updatedBoard = await models.board.updateBoard(board.id, updates);
 
     if (!updatedBoard) {
     return sendError(res, 500, 'Failed to update board', null, 'Board');
     }
 
     // Format for frontend compatibility
-    const formattedBoard = {
-      id: updatedBoard.uuid,
-      title: updatedBoard.title,
-      slug: updatedBoard.slug,
-    createdBy: username,
-      createdAt: new Date(updatedBoard.created_at).getTime(),
-      lastUpdated: new Date(updatedBoard.last_updated).getTime(),
-      isPublic: !!updatedBoard.is_public,
-    description: updatedBoard.description,
-    settings: updatedBoard.settings
-    };
+    const formattedBoard = BoardFormatterService.formatBoard(updatedBoard, req.user, {}, req);
 
   logger.board.info('Board updated successfully', {
       username,
@@ -305,7 +275,7 @@ router.delete('/:username/:slug', isAuthenticated, asyncHandler(async (req, res)
   const { username, slug } = req.params;
   const userId = req.user.user_id;
   
-    const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
+    const board = await models.board.getBoardByUsernameAndSlug(username, slug);
 
     if (!board) {
     return sendError(res, 404, 'Board not found', null, 'Board');
@@ -316,7 +286,7 @@ router.delete('/:username/:slug', isAuthenticated, asyncHandler(async (req, res)
     return sendError(res, 403, 'You do not have permission to delete this board', null, 'Board');
     }
 
-    const success = await boardModel.deleteBoard(board.id);
+    const success = await models.board.deleteBoard(board.id);
 
     if (!success) {
     return sendError(res, 500, 'Failed to delete board', null, 'Board');
@@ -347,7 +317,7 @@ router.put('/:username/:slug/cells/:row/:col', createValidator('cell'), asyncHan
     return sendError(res, 400, 'Invalid row or column coordinates', null, 'Board');
     }
 
-    const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
+    const board = await models.board.getBoardByUsernameAndSlug(username, slug);
 
     if (!board) {
     return sendError(res, 404, 'Board not found', null, 'Board');
@@ -375,7 +345,7 @@ router.put('/:username/:slug/cells/:row/:col', createValidator('cell'), asyncHan
   if (marked !== undefined) cellData.marked = marked;
   if (type !== undefined) cellData.type = type;
 
-  const updatedCell = await boardModel.updateCell(board.id, rowNum, colNum, cellData, userId);
+  const updatedCell = await models.board.updateCell(board.id, rowNum, colNum, cellData, userId);
   
   if (!updatedCell) {
     return sendError(res, 500, 'Failed to update cell', null, 'Board');
@@ -422,13 +392,13 @@ router.get('/:username/:slug/cells/:row/:col', asyncHandler(async (req, res) => 
     return sendError(res, 400, 'Invalid row or column coordinates', null, 'Board');
   }
   
-  const board = await boardModel.getBoardByUsernameAndSlug(username, slug);
+  const board = await models.board.getBoardByUsernameAndSlug(username, slug);
   
   if (!board) {
     return sendError(res, 404, 'Board not found', null, 'Board');
   }
   
-  const cell = await boardModel.getCell(board.id, rowNum, colNum);
+  const cell = await models.board.getCell(board.id, rowNum, colNum);
   
   if (!cell) {
     return sendError(res, 404, 'Cell not found', null, 'Board');

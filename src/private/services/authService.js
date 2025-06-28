@@ -44,7 +44,7 @@ class AuthService {
     try {
       switch (method) {
         case 'site_password':
-          return await this.authenticateWithPassword(data.password, requestInfo);
+          return await this.authenticateWithPassword(data.password, data.username, requestInfo);
         
         case 'local':
           return await this.authenticateLocal(data.email, data.password, requestInfo);
@@ -183,10 +183,11 @@ class AuthService {
   /**
    * Authenticate with site password (anonymous access)
    * @param {string} password - Site password
+   * @param {string} username - Optional username (defaults to 'Anonymous')
    * @param {Object} requestInfo - Request information including IP and user agent
    * @returns {Object} - Session info if authenticated, null otherwise
    */
-  async authenticateWithPassword(password, requestInfo) {
+  async authenticateWithPassword(password, username = 'Anonymous', requestInfo) {
     try {
       // Verify the password using the stored hash
       const isValid = this.verifyPassword(
@@ -201,14 +202,15 @@ class AuthService {
         return null;
       }
       
-      // Create anonymous user for this session
-      const anonymousUser = await userModel.createAnonymousUser('Anonymous User');
+      // Create anonymous user for this session with chosen username
+      const anonymousUser = await userModel.createAnonymousUser(username || 'Anonymous');
       
       // Create a new session
       const session = await this.createSession(anonymousUser.user_id, requestInfo);
       
       logger.auth.info('Successful site password authentication', { 
         userId: anonymousUser.user_id,
+        username: anonymousUser.username,
         ip: requestInfo.ip 
       });
       

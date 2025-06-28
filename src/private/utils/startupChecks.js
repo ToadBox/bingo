@@ -18,7 +18,7 @@ class StartupChecks {
       await this.checkConfigYml();
       await this.checkEnvFile();
       await this.checkDirectories();
-      await this.runDatabaseMigrations();
+      // Database migrations are handled by database.initialize()
       
       logger.info('Startup configuration checks completed successfully');
     } catch (error) {
@@ -192,27 +192,6 @@ LOG_LEVEL=info
         logger.info(`Creating directory: ${dir}`);
         await fs.promises.mkdir(dirPath, { recursive: true });
       }
-    }
-  }
-
-  /**
-   * Run database migrations
-   */
-  async runDatabaseMigrations() {
-    try {
-      logger.info('Running database migrations...');
-      // Migrations are now handled by the database initialization
-      // This method is kept for compatibility but migrations run automatically
-      if (database.migrationManager) {
-        await database.migrationManager.runMigrations();
-      }
-      logger.info('Database migrations completed successfully');
-    } catch (error) {
-      logger.error('Database migrations failed', {
-        error: error.message,
-        stack: error.stack
-      });
-      throw error;
     }
   }
 

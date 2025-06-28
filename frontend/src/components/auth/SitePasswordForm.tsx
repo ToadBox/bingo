@@ -8,7 +8,11 @@ import Input from '../ui/Input'
 import OAuthButtons from './OAuthButtons'
 
 const sitePasswordSchema = z.object({
-  password: z.string().min(1, 'Site password is required'),
+  sitePassword: z.string().min(1, 'Site password is required'),
+  username: z.string()
+    .max(20, 'Username must be less than 20 characters')
+    .regex(/^[a-zA-Z0-9_-]*$/, 'Username can only contain letters, numbers, underscores, and hyphens')
+    .optional(),
 })
 
 type SitePasswordFormData = z.infer<typeof sitePasswordSchema>
@@ -22,19 +26,30 @@ export default function SitePasswordForm() {
     handleSubmit,
     formState: { errors },
     setError,
+    watch,
   } = useForm<SitePasswordFormData>({
     resolver: zodResolver(sitePasswordSchema),
+    defaultValues: {
+      username: ''
+    }
   })
+
+  const watchedUsername = watch('username')
 
   const onSubmit = async (data: SitePasswordFormData) => {
     setIsLoading(true)
     try {
-      const result = await loginWithSitePassword(data)
+      const credentials = {
+        sitePassword: data.sitePassword,
+        username: data.username || 'Anonymous'
+      }
+      
+      const result = await loginWithSitePassword(credentials)
       if (!result.success && result.error) {
-        setError('password', { message: result.error })
+        setError('sitePassword', { message: result.error })
       }
     } catch (error) {
-      setError('password', { message: 'An unexpected error occurred' })
+      setError('sitePassword', { message: 'An unexpected error occurred' })
     } finally {
       setIsLoading(false)
     }
@@ -47,18 +62,27 @@ export default function SitePasswordForm() {
           Quick Access
         </h3>
         <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-          Enter the site password for anonymous access
+          Enter the site password for quick access
         </p>
       </div>
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         <Input
-          {...register('password')}
+          {...register('sitePassword')}
           type="password"
           label="Site Password"
           placeholder="Enter the site password"
-          error={errors.password?.message}
+          error={errors.sitePassword?.message}
           autoComplete="current-password"
+        />
+
+        <Input
+          {...register('username')}
+          type="text"
+          label="Username (optional)"
+          placeholder="Choose your username"
+          error={errors.username?.message}
+          helpText={`You'll be known as "${watchedUsername || 'Anonymous'}" on boards you create`}
         />
 
         <Button
@@ -67,13 +91,13 @@ export default function SitePasswordForm() {
           isLoading={isLoading}
           disabled={isLoading}
         >
-          {isLoading ? 'Signing in...' : 'Quick Access'}
+          {isLoading ? 'Signing in...' : 'Enter Site'}
         </Button>
       </form>
 
       <div className="text-center">
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          This provides anonymous access to the bingo site
+          Quick access for browsing and creating boards
         </p>
       </div>
 

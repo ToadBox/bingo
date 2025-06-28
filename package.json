@@ -3,13 +3,19 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "LOG_LEVEL=DEBUG node src/private/server.js",
+    "test": "jest",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "nodemon src/private/server.js",
+    "client": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "cache:stats": "node bin/bingo-cache.js stats",
+    "cache:test": "node bin/bingo-cache.js test",
+    "cache:benchmark": "node bin/bingo-cache.js benchmark",
     "dev:full": "concurrently \"npm run dev\" \"npm run frontend:dev\"",
     "frontend:dev": "cd frontend && npm run dev",
     "frontend:build": "cd frontend && npm run build",
     "cleanup:old-frontend": "bash scripts/cleanup-old-frontend.sh",
-    "start": "NODE_ENV=production node src/private/server.js",
+    "start": "node src/private/server.js",
     "start:uni": "NODE_ENV=production BOARD_MODE=unified node src/private/server.js",
     "start:ind": "NODE_ENV=production BOARD_MODE=individual node src/private/server.js",
     "start:uni:debug": "BOARD_MODE=unified LOG_LEVEL=DEBUG node src/private/server.js",
@@ -26,10 +32,11 @@
     "bcrypt": "^5.1.0",
     "body-parser": "^1.20.2",
     "canvas": "^3.1.0",
+    "commander": "^11.0.0",
     "connect-sqlite3": "^0.9.13",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
-    "discord.js": "^14.16.3",
+    "discord.js": "^14.11.0",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
     "express-rate-limit": "^6.7.0",
@@ -42,7 +49,7 @@
     "passport-discord": "^0.1.4",
     "passport-google-oauth20": "^2.0.0",
     "passport-local": "^1.0.0",
-    "sharp": "^0.33.5",
+    "sharp": "^0.32.1",
     "socket.io": "^4.8.1",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.6",
@@ -50,6 +57,7 @@
     "winston": "^3.8.2"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.1.10"
   }
 }

@@ -7,7 +7,7 @@ import type {
   RegisterCredentials, 
   SitePasswordCredentials,
   AuthConfig 
-} from '../types/auth'
+} from '../../../shared/types'
 
 export const authService = {
   // Check authentication status

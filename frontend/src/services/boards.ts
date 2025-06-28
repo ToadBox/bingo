@@ -1,62 +1,16 @@
 import api, { handleApiError } from './api'
 import { logger } from '../utils/logger'
+import type {
+  Board,
+  Cell,
+  CreateBoardData,
+  UpdateBoardData,
+  BoardsListResponse
+} from '../../../shared/types'
 
-export interface Board {
-  id: string
-  uuid: string
-  title: string
-  slug: string
-  description?: string
-  createdBy: string
-  createdAt: string
-  lastUpdated: string
-  isPublic: boolean
-  settings: {
-    size: number
-    freeSpace: boolean
-    [key: string]: any
-  }
-  creatorUsername?: string
-  cellCount?: number
-  completionRate?: number
-}
-
-export interface BoardCell {
-  id: string
-  boardId: string
-  row: number
-  col: number
-  value: string
-  type: 'text' | 'image'
-  marked: boolean
-  lastUpdated: string
-  updatedBy?: string
-}
-
-export interface CreateBoardData {
-  title: string
-  description?: string
-  isPublic?: boolean
-  size?: number
-  freeSpace?: boolean
-}
-
-export interface UpdateBoardData {
-  title?: string
-  description?: string
-  isPublic?: boolean
-  settings?: any
-}
-
-export interface BoardsListResponse {
-  boards: Board[]
-  pagination: {
-    page: number
-    limit: number
-    total: number
-    totalPages: number
-  }
-}
+// Re-export types for backward compatibility
+export type { Board, CreateBoardData, UpdateBoardData, BoardsListResponse }
+export type BoardCell = Cell
 
 export const boardsService = {
   // Get all boards with pagination and filters
@@ -90,7 +44,7 @@ export const boardsService = {
   },
 
   // Get board cells
-  async getBoardCells(boardId: string): Promise<BoardCell[]> {
+  async getBoardCells(boardId: string): Promise<Cell[]> {
     try {
       const response = await api.get(`/boards/${boardId}/cells`)
       return response.data
@@ -140,7 +94,7 @@ export const boardsService = {
     value?: string
     type?: 'text' | 'image'
     marked?: boolean
-  }): Promise<BoardCell> {
+  }): Promise<Cell> {
     try {
       const response = await api.put(`/boards/${boardId}/cells/${cellId}`, data)
       logger.board.info('Cell updated successfully', { boardId, cellId })

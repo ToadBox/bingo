@@ -27,7 +27,8 @@ export interface RegisterCredentials {
 }
 
 export interface SitePasswordCredentials {
-  password: string
+  sitePassword: string
+  username?: string
 }
 
 export interface AuthContextType {

@@ -1,18 +1,26 @@
 const { v4: uuidv4 } = require('uuid');
 const database = require('./database');
-const logger = require('../utils/logger');
+const logger = require('../utils/logger').board;
 const constants = require('../config/constants');
 const SlugGenerator = require('../utils/slugGenerator');
 const configLoader = require('../utils/configLoader');
 const DatabaseHelpers = require('../utils/databaseHelpers');
 const { createValidator } = require('../middleware/validation');
+const globalCache = require('../utils/globalCache');
 
 class BoardModel {
   constructor() {
+    this.dbHelpers = new DatabaseHelpers();
     this.defaultBoardSize = constants.DEFAULT_BOARD_SIZE || 5;
     this.minBoardSize = constants.MIN_BOARD_SIZE || 3;
     this.maxBoardSize = constants.MAX_BOARD_SIZE || 9;
-    this.dbHelpers = new DatabaseHelpers(database);
+  }
+
+  /**
+   * Get cache key for board operations
+   */
+  getCacheKey(operation, ...params) {
+    return `board:${operation}:${params.join(':')}`;
   }
 
   /**
@@ -43,7 +51,8 @@ class BoardModel {
       description = '',
       size = this.defaultBoardSize,
       freeSpace = true,
-      createdByName = null
+      createdByName = null,
+      settings = null
     } = boardData;
     
     const uuid = boardData.uuid || `user-${uuidv4()}`;
@@ -53,12 +62,29 @@ class BoardModel {
       return await this.dbHelpers.transaction(async (helpers) => {
         // Generate slug
         let slug;
+        let creatorUsername;
+        
         if (!createdBy) {
           // Server board
           const serverUsername = configLoader.get('site.serverUsername', 'server');
           slug = SlugGenerator.generateServerSlug(title, serverUsername);
+          creatorUsername = 'server';
         } else {
-          // User board - generate unique slug for this user
+          // User board - get the actual username
+          const user = await helpers.getRecord(
+            'SELECT username FROM users WHERE user_id = ?',
+            [createdBy],
+            'get user for board creation',
+            'Board'
+          );
+          
+          if (!user) {
+            throw new Error('User not found for board creation');
+          }
+          
+          creatorUsername = user.username;
+          
+          // Generate unique slug for this user
           const checkSlugExists = async (testSlug) => {
             return await helpers.recordExists('boards', {
               slug: testSlug,
@@ -69,40 +95,51 @@ class BoardModel {
           slug = await SlugGenerator.generateUniqueSlug(title, checkSlugExists);
         }
 
-        // Create board record
-        const boardData = {
+        // Create board record with creator_username
+        const finalSettings = settings ? 
+          (typeof settings === 'string' ? JSON.parse(settings) : settings) :
+          {
+            size: boardSize,
+            freeSpace
+          };
+
+        const boardRecord = {
           uuid, 
           title, 
           slug,
           created_by: createdBy,
+          creator_username: creatorUsername,  // Store username directly
           is_public: isPublic ? 1 : 0,
           description,
-          settings: JSON.stringify({
-            size: boardSize,
-            freeSpace,
-            createdByName
-          })
+          settings: JSON.stringify(finalSettings)
         };
 
-        const board = await helpers.insertRecord('boards', boardData, 'Board');
+        const board = await helpers.insertRecord('boards', boardRecord, 'Board');
         
         // Create empty cells for the board
-        await this._createEmptyCells(helpers, board.id, boardSize);
+        await this._createEmptyCells(helpers, board.id, finalSettings.size || boardSize);
         
-        logger.board.info('Board created successfully', {
+        logger.info('Board created successfully', {
           id: board.id,
           uuid,
           title,
           slug,
-          size: boardSize,
+          creatorUsername,
+          size: finalSettings.size || boardSize,
           createdBy
         });
         
-        // Return the full board with cells
-        return await this.getBoardById(board.id);
+        // Return the board with username included
+        const createdBoard = await this.getBoardById(board.id);
+        createdBoard.creator_username = creatorUsername;  // Ensure it's included
+        
+        // Invalidate relevant caches
+        this.invalidateBoardCache(board.id, creatorUsername, slug);
+        
+        return createdBoard;
       }, 'Board');
     } catch (error) {
-      logger.board.error('Failed to create board', {
+      logger.error('Failed to create board', {
         error: error.message,
         title,
         uuid,
@@ -114,14 +151,25 @@ class BoardModel {
   }
 
   /**
-   * Get board by ID
+   * Get board by ID with caching
    * @param {number} id - Board ID
    * @returns {Object|null} - Board object or null if not found
    */
   async getBoardById(id) {
+    const cacheKey = this.getCacheKey('byId', id);
+    
+    // Try cache first
+    if (globalCache.isEnabled()) {
+      const cached = globalCache.get('database', cacheKey);
+      if (cached) {
+        logger.debug('Board cache hit', { id, cacheKey });
+        return cached;
+      }
+    }
+
     try {
       const board = await this.dbHelpers.getRecord(
-        `SELECT id, uuid, title, slug, created_by, created_at, last_updated, 
+        `SELECT id, uuid, title, slug, created_by, creator_username, created_at, last_updated, 
                 is_public, description, settings
          FROM boards WHERE id = ?`,
         [id],
@@ -140,9 +188,15 @@ class BoardModel {
       const cells = await this._getBoardCells(id);
       board.cells = this._formatCellsAsGrid(cells, board.settings.size);
       
+      // Cache the result
+      if (globalCache.isEnabled()) {
+        globalCache.set('database', cacheKey, board, { ttl: 900 }); // 15 minutes
+        logger.debug('Board cached', { id, cacheKey });
+      }
+      
       return board;
     } catch (error) {
-      logger.board.error('Failed to get board by ID', {
+      logger.error('Failed to get board by ID', {
         error: error.message,
         id
       });
@@ -179,7 +233,7 @@ class BoardModel {
       
       return board;
     } catch (error) {
-      logger.board.error('Failed to get board by UUID', {
+      logger.error('Failed to get board by UUID', {
         error: error.message,
         uuid
       });
@@ -188,40 +242,34 @@ class BoardModel {
   }
 
   /**
-   * Get board by username and slug
+   * Get board by username and slug with caching
    * @param {string} username - Username (or 'server' for server boards)
    * @param {string} slug - Board slug
    * @returns {Object|null} - Board object or null if not found
    */
   async getBoardByUsernameAndSlug(username, slug) {
+    const cacheKey = this.getCacheKey('byUsernameSlug', username, slug);
+    
+    // Try cache first
+    if (globalCache.isEnabled()) {
+      const cached = globalCache.get('database', cacheKey);
+      if (cached) {
+        logger.debug('Board cache hit', { username, slug, cacheKey });
+        return cached;
+    }
+  }
+
     try {
-      let board;
-      
-      if (username === 'server') {
-        // Server board - no specific user
-        board = await this.dbHelpers.getRecord(
-          `SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, 
-                  b.last_updated, b.is_public, b.description, b.settings
-          FROM boards b
-           WHERE b.slug = ? AND b.created_by IS NULL`,
-          [slug],
-          'get server board by slug',
-          'Board'
-        );
-      } else {
-        // User board - need to join with users table
-        board = await this.dbHelpers.getRecord(
-          `SELECT b.id, b.uuid, b.title, b.slug, b.created_by, b.created_at, 
-                  b.last_updated, b.is_public, b.description, b.settings,
-                  u.username
-          FROM boards b
-           JOIN users u ON b.created_by = u.user_id
-           WHERE b.slug = ? AND u.username = ?`,
+      // Use creator_username field directly - no need for JOIN
+      const board = await this.dbHelpers.getRecord(
+        `SELECT id, uuid, title, slug, created_by, creator_username, created_at, 
+                last_updated, is_public, description, settings
+        FROM boards 
+         WHERE slug = ? AND creator_username = ?`,
           [slug, username],
-          'get user board by username and slug',
+        'get board by username and slug',
           'Board'
         );
-      }
       
       if (!board) {
         return null;
@@ -234,9 +282,15 @@ class BoardModel {
       const cells = await this._getBoardCells(board.id);
       board.cells = this._formatCellsAsGrid(cells, board.settings.size);
       
+      // Cache the result
+      if (globalCache.isEnabled()) {
+        globalCache.set('database', cacheKey, board, { ttl: 900 }); // 15 minutes
+        logger.debug('Board cached', { username, slug, cacheKey });
+      }
+      
       return board;
     } catch (error) {
-      logger.board.error('Failed to get board by username and slug', {
+      logger.error('Failed to get board by username and slug', {
         error: error.message,
         username,
         slug
@@ -334,7 +388,7 @@ class BoardModel {
         }
       };
     } catch (error) {
-      logger.board.error('Failed to get all boards', {
+      logger.error('Failed to get all boards', {
         error: error.message,
         options
       });
@@ -382,14 +436,14 @@ class BoardModel {
         return null;
       }
       
-      logger.board.info('Board updated successfully', {
+      logger.info('Board updated successfully', {
         boardId,
         updates: Object.keys(updateData)
       });
       
       return await this.getBoardById(boardId);
     } catch (error) {
-      logger.board.error('Failed to update board', {
+      logger.error('Failed to update board', {
         error: error.message,
         boardId,
         updates
@@ -420,14 +474,14 @@ class BoardModel {
         const deletedRows = await helpers.deleteRecord('boards', { id: boardId }, 'Board');
         
         if (deletedRows > 0) {
-          logger.board.info('Board deleted successfully', { boardId });
+          logger.info('Board deleted successfully', { boardId });
           return true;
         }
         
         return false;
       }, 'Board');
     } catch (error) {
-      logger.board.error('Failed to delete board', {
+      logger.error('Failed to delete board', {
         error: error.message,
         boardId
       });
@@ -800,7 +854,7 @@ class BoardModel {
         }
       }
       
-      logger.board.debug('Created empty cells for board', {
+      logger.debug('Created empty cells for board', {
         boardId,
         size: boardSize,
         totalCells: boardSize * boardSize
@@ -808,7 +862,7 @@ class BoardModel {
       
       return true;
     } catch (error) {
-      logger.board.error('Failed to create empty cells', {
+      logger.error('Failed to create empty cells', {
         error: error.message,
         boardId,
         size
@@ -1115,6 +1169,30 @@ class BoardModel {
         freeSpace: true
       };
     }
+  }
+
+  /**
+   * Invalidate cache for a board
+   * @param {string} boardId - Board ID
+   * @param {string} username - Board creator username
+   * @param {string} slug - Board slug
+   */
+  invalidateBoardCache(boardId, username = null, slug = null) {
+    if (!globalCache.isEnabled()) return;
+
+    const keysToInvalidate = [
+      this.getCacheKey('byId', boardId),
+      this.getCacheKey('boards', 'all'), // Invalidate board lists
+    ];
+
+    if (username && slug) {
+      keysToInvalidate.push(this.getCacheKey('byUsernameSlug', username, slug));
+    }
+
+    keysToInvalidate.forEach(key => {
+      globalCache.delete('database', key);
+      logger.debug('Cache invalidated', { key });
+    });
   }
 }
 

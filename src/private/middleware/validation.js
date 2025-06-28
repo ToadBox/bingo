@@ -1,6 +1,9 @@
 const logger = require('../utils/logger');
 const { sendError } = require('../utils/responseHelpers');
 
+// Use API logger for validation since validation is part of API processing
+const validationLogger = logger.api;
+
 /**
  * Validation schemas for different data types
  */
@@ -38,6 +41,20 @@ const schemas = {
       required: false
     },
     isPublic: {
+      type: 'boolean',
+      required: false
+    },
+    size: {
+      type: 'number',
+      min: 3,
+      max: 9,
+      required: false
+    },
+    freeSpace: {
+      type: 'boolean',
+      required: false
+    },
+    useServerName: {
       type: 'boolean',
       required: false
     }
@@ -205,7 +222,7 @@ const createValidator = (schemaName, options = {}) => {
     const schema = schemas[schemaName];
     
     if (!schema) {
-      logger.validation.error('Unknown validation schema', { schemaName });
+      validationLogger.error('Unknown validation schema', { schemaName });
       return sendError(res, 500, 'Internal validation error', null, component);
     }
 
@@ -229,7 +246,7 @@ const createValidator = (schemaName, options = {}) => {
     const validation = validateData(data, schema);
     
     if (!validation.valid) {
-      logger.validation.warn('Validation failed', {
+      validationLogger.warn('Validation failed', {
         schemaName,
         errors: validation.errors,
         path: req.path
@@ -243,7 +260,7 @@ const createValidator = (schemaName, options = {}) => {
     // Attach sanitized data to request
     req.validated = validation.data;
     
-    logger.validation.debug('Validation successful', {
+    validationLogger.debug('Validation successful', {
       schemaName,
       fields: Object.keys(validation.data)
     });

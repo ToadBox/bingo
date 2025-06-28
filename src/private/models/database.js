@@ -223,6 +223,42 @@ class Database {
         )
       `);
 
+      // Error reports table for centralized error tracking
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS error_reports (
+          id TEXT PRIMARY KEY,
+          request_id TEXT,
+          component TEXT NOT NULL,
+          level TEXT NOT NULL,
+          message TEXT NOT NULL,
+          stack_trace TEXT,
+          user_id TEXT,
+          ip_address TEXT,
+          user_agent TEXT,
+          endpoint TEXT,
+          context TEXT,
+          resolved BOOLEAN DEFAULT 0,
+          resolved_by TEXT,
+          resolved_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (resolved_by) REFERENCES users(user_id)
+        )
+      `);
+
+      // Performance metrics table for request timing/memory analytics
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS performance_metrics (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          request_id TEXT,
+          endpoint TEXT NOT NULL,
+          method TEXT NOT NULL,
+          duration_ms INTEGER NOT NULL,
+          memory_delta_mb REAL,
+          status_code INTEGER,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
       logger.database.info('Database tables created successfully');
     } catch (error) {
       logger.database.error('Failed to create database tables', { 

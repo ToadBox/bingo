@@ -14,6 +14,7 @@ import LoginPage from './pages/auth/LoginPage'
 import HomePage from './pages/HomePage'
 import BoardsPage from './pages/boards/BoardsPage'
 import BoardPage from './pages/boards/BoardPage'
+import CreateBoardPage from './pages/boards/CreateBoardPage'
 import AdminPage from './pages/admin/AdminPage'
 import NotFoundPage from './pages/NotFoundPage'
 
@@ -36,6 +37,7 @@ function AppRoutes() {
       {/* Protected routes */}
       <Route path="/" element={<AuthGuard><Layout><HomePage /></Layout></AuthGuard>} />
       <Route path="/boards" element={<AuthGuard><Layout><BoardsPage /></Layout></AuthGuard>} />
+      <Route path="/boards/create" element={<AuthGuard><Layout><CreateBoardPage /></Layout></AuthGuard>} />
       <Route path="/board/:boardId" element={<AuthGuard><Layout><BoardPage /></Layout></AuthGuard>} />
       <Route path="/:username/:boardSlug" element={<AuthGuard><Layout><BoardPage /></Layout></AuthGuard>} />
       <Route path="/anonymous/:boardSlug" element={<AuthGuard><Layout><BoardPage /></Layout></AuthGuard>} />

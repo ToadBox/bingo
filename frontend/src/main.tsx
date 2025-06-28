@@ -5,6 +5,7 @@ import { BrowserRouter } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 
 import App from './App.tsx'
+import ErrorBoundary from './components/ui/ErrorBoundary'
 import './styles/globals.css'
 
 // Create a client for React Query
@@ -21,7 +22,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
+        <ErrorBoundary>
         <App />
+        </ErrorBoundary>
         <Toaster
           position="top-right"
           toastOptions={{

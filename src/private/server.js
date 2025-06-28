@@ -7,7 +7,6 @@ const cookieParser = require('cookie-parser');
 const session = require('express-session');
 const logger = require('./utils/logger');
 const DiscordCommands = require('./routes/discord');
-const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
 const boardsRoutes = require('./routes/boards');
 const { isAuthenticated } = require('./middleware/auth');
@@ -21,6 +20,11 @@ const imageRoutes = require('./routes/images');
 const websocketServer = require('./websocket');
 const configLoader = require('./utils/configLoader');
 const startupChecks = require('./utils/startupChecks');
+const requestTracking = require('./middleware/requestTracking');
+const performanceMonitoring = require('./middleware/performanceMonitoring');
+const adminErrorReportsRoutes = require('./routes/admin/errorReports');
+const { buildDevServerUrl } = require('./utils/devRedirect');
+const globalCache = require('./utils/globalCache');
 
 class Server {
     constructor() {
@@ -29,6 +33,9 @@ class Server {
         this.isShuttingDown = false;
         this.connections = new Set();
         this.discordEnabled = false;
+        
+        // Initialize global cache first
+        globalCache.initialize();
         
         // Check if Discord should be enabled
         this.checkDiscordAvailability();
@@ -51,6 +58,13 @@ class Server {
     }
 
     /**
+     * Get global cache instance
+     */
+    getCache() {
+        return globalCache;
+    }
+
+    /**
      * Check if Discord should be enabled
      */
     checkDiscordAvailability() {
@@ -69,14 +83,14 @@ class Server {
                 return;
             }
 
-            // Check if Discord client credentials are provided
+            // Check if Discord client credentials are provided for OAuth
             if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) {
                 logger.discord.warn('Discord OAuth disabled: Missing client credentials');
                 // Bot can still work without OAuth
             }
 
             this.discordEnabled = true;
-            logger.discord.info('Discord enabled');
+            logger.discord.info('Discord bot enabled');
         } catch (error) {
             logger.discord.error('Error checking Discord availability', {
                 error: error.message
@@ -86,6 +100,11 @@ class Server {
     }
 
     setupMiddleware() {
+        // Request tracking & performance monitoring should be first so that
+        // later middleware can leverage the generated requestId and metrics
+        this.app.use(requestTracking);
+        this.app.use(performanceMonitoring);
+
         // Security middleware
         this.app.use(helmet({
             contentSecurityPolicy: {
@@ -144,31 +163,14 @@ class Server {
     }
 
     setupRoutes() {
-        // Add request logging middleware
-        this.app.use((req, res, next) => {
-            const start = Date.now();
-            res.on('finish', () => {
-                logger.api.debug('Request completed', {
-                    method: req.method,
-                    path: req.path,
-                    status: res.statusCode,
-                    duration: Date.now() - start
-                });
-            });
-            next();
-        });
-
         // Authentication routes
         this.app.use('/api/auth', authRoutes);
         
         // Configure Discord OAuth routes if Discord is enabled
         // Note: Discord routes are configured within the auth router itself
 
-        // New boards routes (must come before legacy API routes)
+        // Board routes
         this.app.use('/api/boards', boardsRoutes);
-        
-        // API routes (legacy)
-        this.app.use('/api', apiRoutes);
         
         // User routes
         this.app.use('/api/users', userRoutes);
@@ -176,7 +178,9 @@ class Server {
         // Notification routes
         this.app.use('/api/notifications', isAuthenticated, notificationRoutes);
         
-        // Admin routes
+        // Admin routes – mount specialised endpoints first to avoid them being
+        // swallowed by the broader '/api/admin' router.
+        this.app.use('/api/admin/error-reports', isAuthenticated, adminErrorReportsRoutes);
         this.app.use('/api/admin', isAuthenticated, adminRoutes);
         
         // Chat routes
@@ -191,7 +195,16 @@ class Server {
                 res.sendFile('index.html', { root: 'frontend/dist' });
             } else {
                 // In development, redirect to React dev server
-                res.redirect('http://localhost:3001/boards');
+                res.redirect(buildDevServerUrl(req, '/boards'));
+            }
+        });
+
+        // Create board page
+        this.app.get('/boards/create', isAuthenticated, (req, res) => {
+            if (process.env.NODE_ENV === 'production') {
+                res.sendFile('index.html', { root: 'frontend/dist' });
+            } else {
+                res.redirect(buildDevServerUrl(req, '/boards/create'));
             }
         });
 
@@ -256,7 +269,7 @@ class Server {
             if (process.env.NODE_ENV === 'production') {
                 res.sendFile('index.html', { root: 'frontend/dist' });
             } else {
-                res.redirect(`http://localhost:3001/board/${req.params.boardId}`);
+                res.redirect(buildDevServerUrl(req, `/board/${req.params.boardId}`));
             }
         });
 
@@ -265,7 +278,7 @@ class Server {
             if (process.env.NODE_ENV === 'production') {
                 res.sendFile('index.html', { root: 'frontend/dist' });
             } else {
-                res.redirect('http://localhost:3001/');
+                res.redirect(buildDevServerUrl(req, '/'));
             }
         });
 
@@ -277,7 +290,7 @@ class Server {
             if (process.env.NODE_ENV === 'production') {
                 res.sendFile('index.html', { root: 'frontend/dist' });
             } else {
-                res.redirect('http://localhost:3001/admin');
+                res.redirect(buildDevServerUrl(req, '/admin'));
             }
         });
 
@@ -286,7 +299,7 @@ class Server {
             if (process.env.NODE_ENV === 'production') {
                 res.sendFile('index.html', { root: 'frontend/dist' });
             } else {
-                res.redirect('http://localhost:3001/login');
+                res.redirect(buildDevServerUrl(req, '/login'));
             }
         });
 
@@ -318,7 +331,7 @@ class Server {
                 res.sendFile('index.html', { root: 'frontend/dist' });
             } else {
                 // In development, redirect to React dev server
-                res.redirect(`http://localhost:3001${req.path}`);
+                res.redirect(buildDevServerUrl(req, req.path));
             }
         });
     }
@@ -406,45 +419,41 @@ class Server {
             // Load configuration first
             configLoader.loadConfig();
             
-            // Initialize database before running checks
+            // Initialize database (includes migrations)
             await database.initialize();
             
-            // Run startup configuration checks (including migrations)
+            // Run startup configuration checks (without migrations)
             await startupChecks.runChecks();
             
-            // Connect to Discord if enabled
+            // Initialize Discord bot if enabled
             if (this.discordEnabled && this.client && process.env.DISCORD_BOT_TOKEN) {
                 try {
                     await this.client.login(process.env.DISCORD_BOT_TOKEN);
-                    logger.info('Discord bot connected successfully');
+                    logger.discord.info('Discord bot connected successfully');
+                    
+                    // Initialize Discord commands
+                    try {
+                        const { DiscordCommands } = require('./routes/discord');
+                        const discordCommands = new DiscordCommands();
+                        await discordCommands.initialize();
+                        logger.discord.info('Discord commands initialized');
+                    } catch (commandError) {
+                        logger.discord.warn('Discord commands failed to initialize', { 
+                            error: commandError.message 
+                        });
+                    }
                 } catch (error) {
-                    logger.error('Failed to connect Discord bot', {
-                        error: error.message,
-                        stack: error.stack
+                    logger.discord.error('Failed to connect Discord bot', {
+                        error: error.message
                     });
-                    logger.warn('Continuing without Discord bot functionality');
+                    logger.discord.warn('Continuing without Discord functionality');
                     this.discordEnabled = false;
                 }
             }
 
-            // Initialize Discord bot if token is provided
-            let discordCommands = null;
-            if (process.env.DISCORD_BOT_TOKEN) {
-                try {
-                    const { DiscordCommands } = require('./routes/discord');
-                    discordCommands = new DiscordCommands();
-                    await discordCommands.initialize();
-                    logger.info('Discord bot initialized successfully');
-                } catch (error) {
-                    logger.error('Failed to initialize Discord bot', { error: error.message });
-                    logger.warn('Discord bot is disabled');
-                }
-            } else {
-                logger.warn('Discord disabled: No DISCORD_BOT_TOKEN provided');
-            }
-
             // Initialize WebSocket server
             websocketServer.initialize(this.server);
+            logger.websocket.info('WebSocket server initialized');
 
             // Track connections for graceful shutdown
             this.server.on('connection', (connection) => {
@@ -480,11 +489,12 @@ module.exports = Server;
 // Start server if this file is run directly
 if (require.main === module) {
     const server = new Server();
+    
     server.start().catch(error => {
-        logger.error('Server startup failed', {
-            error: error.message,
-            stack: error.stack
-        });
+        logger.server.error('Failed to start server', { error: error.message });
         process.exit(1);
     });
 }
+
+// Export global cache for use in other modules
+module.exports.getCache = () => globalCache;

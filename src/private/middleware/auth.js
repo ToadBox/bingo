@@ -100,4 +100,34 @@ const isAuthenticated = async (req, res, next) => {
   next();
 };
 
-module.exports = { isAuthenticated }; 
+/**
+ * Middleware to require admin privileges
+ * Must be used after isAuthenticated
+ */
+const requireAdmin = (req, res, next) => {
+  if (!req.user) {
+    return handleAuthFailure(res, req.path, 'Authentication required');
+  }
+  
+  if (!req.user.is_admin && !req.isAdmin) {
+    logger.auth.warn('Non-admin user attempting to access admin resource', {
+      userId: req.user.user_id || req.user.id,
+      username: req.user.username,
+      path: req.path
+    });
+    
+    return handleAccessDenied(res, req.path, 'Admin privileges required', {
+      requiresAdmin: true
+    });
+  }
+  
+  logger.auth.debug('Admin access granted', {
+    userId: req.user.user_id || req.user.id,
+    username: req.user.username,
+    path: req.path
+  });
+  
+  next();
+};
+
+module.exports = { isAuthenticated, requireAdmin }; 

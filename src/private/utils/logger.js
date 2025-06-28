@@ -150,7 +150,9 @@ const defaultLogger = {
   config: createComponentLogger('Config'),
   migration: createComponentLogger('Migration'),
   frontend: createComponentLogger('Frontend'),
-  react: createComponentLogger('React')
+  react: createComponentLogger('React'),
+  cache: createComponentLogger('Cache'),
+  server: createComponentLogger('Server')
 };
 
 module.exports = defaultLogger; 

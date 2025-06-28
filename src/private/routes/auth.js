@@ -4,6 +4,7 @@ const logger = require('../utils/logger');
 const rateLimit = require('express-rate-limit');
 const authService = require('../services/authService');
 const userModel = require('../models/userModel');
+const { isAuthenticated } = require('../middleware/auth');
 const { 
   sendError, 
   sendSuccess, 
@@ -73,7 +74,6 @@ router.post('/authenticate', loginLimiter, asyncHandler(async (req, res) => {
         userId: authResult.user.user_id,
         username: authResult.user.username,
         email: authResult.user.email,
-        isAdmin: !!authResult.user.is_admin,
         authProvider: authResult.user.auth_provider
       },
       message: 'Authentication successful'
@@ -135,7 +135,6 @@ router.post('/register', registerLimiter, asyncHandler(async (req, res) => {
           userId: registrationResult.user.user_id,
           username: registrationResult.user.username,
           email: registrationResult.user.email,
-          isAdmin: !!registrationResult.user.is_admin,
           authProvider: registrationResult.user.auth_provider
         },
         message: registrationResult.message
@@ -157,16 +156,20 @@ router.post('/register', registerLimiter, asyncHandler(async (req, res) => {
 }, 'Auth'));
 
 /**
- * Site password authentication (anonymous access)
- * Legacy endpoint for backward compatibility
+ * Site password authentication with username selection
  */
 router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
-  validateRequired(req, ['password']);
+  const { sitePassword, username } = req.body;
+  
+  if (!sitePassword) {
+    return sendError(res, 400, 'Site password is required', null, 'Auth');
+  }
   
   const requestInfo = getRequestInfo(req);
   const authResult = await authService.authenticate({
     method: 'site_password',
-    password: req.body.password
+    password: sitePassword,
+    username: username || 'Anonymous'
   }, requestInfo);
   
   if (!authResult) {
@@ -179,10 +182,10 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     user: {
       userId: authResult.user.user_id,
       username: authResult.user.username,
-      isAdmin: false,
-      authProvider: 'anonymous'
+      email: authResult.user.email,
+      authProvider: 'local'
     },
-    message: 'Anonymous access granted'
+    message: 'Site access granted'
   }, 200, 'Auth');
 }, 'Auth'));
 
@@ -217,7 +220,6 @@ router.post('/local-login', loginLimiter, asyncHandler(async (req, res) => {
       userId: authResult.user.user_id,
       username: authResult.user.username,
       email: authResult.user.email,
-      isAdmin: !!authResult.user.is_admin,
       authProvider: 'local'
     },
     message: 'Login successful'
@@ -261,7 +263,6 @@ router.post('/google', asyncHandler(async (req, res) => {
       userId: authResult.user.user_id,
       username: authResult.user.username,
       email: authResult.user.email,
-      isAdmin: !!authResult.user.is_admin,
       authProvider: 'google'
     },
     message: 'Google authentication successful'
@@ -308,7 +309,6 @@ if (process.env.DISCORD_BOT_TOKEN && process.env.DISCORD_CLIENT_ID && process.en
         userId: authResult.user.user_id,
         username: authResult.user.username,
         email: authResult.user.email,
-        isAdmin: !!authResult.user.is_admin,
         authProvider: 'discord'
       },
       message: 'Discord authentication successful'
@@ -421,7 +421,6 @@ router.get('/status', asyncHandler(async (req, res) => {
       userId: user.user_id,
       username: user.username,
       email: user.email,
-      isAdmin: !!user.is_admin,
       authProvider: user.auth_provider,
       approvalStatus: user.approval_status
     }
@@ -482,6 +481,16 @@ router.get('/config', asyncHandler(async (req, res) => {
   }
 
   return sendSuccess(res, config, 200, 'Auth');
+}, 'Auth'));
+
+/**
+ * Check if current user has admin privileges
+ * Only returns true/false, doesn't expose other admin info
+ */
+router.get('/admin-check', isAuthenticated, asyncHandler(async (req, res) => {
+  return sendSuccess(res, {
+    isAdmin: !!req.user.is_admin
+  }, 200, 'Auth');
 }, 'Auth'));
 
 module.exports = router; 
