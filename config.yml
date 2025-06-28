@@ -1,15 +1,55 @@
+## Bingo Site Configuration
+## This file contains non-sensitive configuration options
+## Sensitive credentials should be in .env file
+
+## Site Configuration
 site:
   title: ToadBox Bingo
   description: A customizable bingo board site
+  url: http://localhost:3000  # Change for production
   defaultTheme: light
   availableThemes:
     - light
     - dark
     - high-contrast
-  maxBoardsPerUser: 10
-  maxCellsPerBoard: 25
   serverUsername: server
+  contact:
+    email: ""
+    supportUrl: ""
+
+## Server Configuration  
+server:
+  port: 3000
+  host: localhost
+  cors:
+    enabled: true
+    origins:
+      - http://localhost:3001  # React dev server
+      - http://localhost:3000  # Production server
+
+## Authentication Configuration
+auth:
+  allowAnonymous: true
+  sessionTimeout: 24h
+  requireApproval:
+    local: true      # Local accounts need admin approval
+    google: false    # Google accounts auto-approved  
+    discord: false   # Discord accounts auto-approved
+  providers:
+    google:
+      enabled: false  # Set to true and configure credentials in .env
+      # Credentials: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+    discord:
+      enabled: false  # Set to true and configure credentials in .env
+      # Credentials: DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_BOT_TOKEN
+      approvedGuilds: []  # Discord server IDs for auto-approval
+
+## Board Configuration
 boards:
+  limits:
+    maxBoardsPerUser: 10
+    maxCellsPerBoard: 25
+    maxBoardVersions: 50
   defaultSettings:
     size: 5
     freeSpace: true
@@ -21,40 +61,8 @@ boards:
     mentionNotifications: true
     editNotifications: true
     requireApproval: false
-notifications:
-  enabled: true
-  defaultPreferences:
-    mentions: true
-    edits: true
-    approvals: true
-    system: true
-anonymousUsers:
-  enabled: true
-  wordLists:
-    adjectives:
-      - Happy
-      - Quiet
-      - Sleepy
-      - Brave
-      - Mighty
-      - Clever
-      - Wise
-      - Gentle
-      - Swift
-    nouns:
-      - Panda
-      - Tiger
-      - Eagle
-      - Dolphin
-      - Wolf
-      - Fox
-      - Bear
-      - Hawk
-      - Lion
-usernames:
-  minLength: 3
-  maxLength: 20
-  allowSpecialChars: false
+
+## File Storage Configuration
 storage:
   images:
     maxSizeMB: 5
@@ -62,8 +70,56 @@ storage:
       - image/jpeg
       - image/png
       - image/gif
+      - image/webp
     path: ./uploads/images
+    compressionEnabled: true
+    compressionQuality: 80
+
+## Feature Toggles
+features:
+  offlineMode: false      # Disable external services (Discord, etc.)
+  analytics: false        # Enable usage analytics
+  rateLimiting: true      # Enable rate limiting
+  websockets: true        # Enable real-time features
+  fileUploads: true       # Enable image uploads  
+  adminPanel: true        # Enable admin interface
+
+## Notification Configuration
+notifications:
+  enabled: true
+  defaultPreferences:
+    mentions: true
+    edits: true
+    approvals: true
+    system: true
+
+## Logging Configuration
 logging:
-  level: info
+  level: info            # debug, info, warn, error
   logToFiles: true
   logPath: ./logs
+  errorReporting: true   # Store errors in database for admin panel
+  performance: true      # Track performance metrics
+
+## Security Configuration
+security:
+  rateLimiting:
+    windowMs: 900000     # 15 minutes in milliseconds
+    maxRequests: 500     # Max requests per window per IP
+  helmet:
+    enabled: true
+    contentSecurityPolicy: true
+  cookieSettings:
+    httpOnly: true
+    sameSite: strict
+    # secure: true (automatically set in production)
+
+## Database Configuration  
+database:
+  path: ./src/data/bingo.sqlite
+  backupEnabled: true
+  backupInterval: 24h
+
+## Admin Account Configuration
+## Credentials are set in .env file:
+## ROOT_ADMIN_USERNAME, ROOT_ADMIN_PASSWORD, ROOT_ADMIN_EMAIL
