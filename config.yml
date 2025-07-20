@@ -33,23 +33,11 @@ auth:
   sessionTimeout: 24h
   requireApproval:
     local: true      # Local accounts need admin approval
-    google: false    # Google accounts auto-approved  
-    discord: false   # Discord accounts auto-approved
+    authentik: false # Authentik accounts auto-approved
   providers:
-    google:
+    authentik:
       enabled: false  # Set to true and configure credentials in .env
-      # Credentials: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
-    discord:
-      enabled: false  # Set to true and configure credentials in .env
-      # Credentials: DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_BOT_TOKEN
-      approvedGuilds: []  # Discord server IDs for auto-approval
-      guilds:  # Discord guild configuration for board features
-        # Example configuration:
-        # - id: "123456789012345678"
-        #   name: "My Discord Server"
-        #   boardsEnabled: true
-        #   defaultVisibility: "guild"  # public, private, guild
-        #   allowAnonymousBoards: true
+      # Credentials: AUTHENTIK_CLIENT_ID, AUTHENTIK_CLIENT_SECRET
 
 ## Board Configuration
 boards:

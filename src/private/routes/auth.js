@@ -36,7 +36,7 @@ const registerLimiter = rateLimit({
 
 /**
  * Unified authentication endpoint
- * Handles all authentication methods: site_password, local, google, discord
+ * Handles all authentication methods: site_password, local, authentik
  */
 router.post('/authenticate', loginLimiter, asyncHandler(async (req, res) => {
   const { method } = req.body;
@@ -227,174 +227,41 @@ router.post('/local-login', loginLimiter, asyncHandler(async (req, res) => {
 }, 'Auth'));
 
 /**
- * Google OAuth authentication
+ * Authentik OAuth callback (authorization code flow)
  */
-router.post('/google', asyncHandler(async (req, res) => {
-  validateRequired(req, ['idToken']);
-  
+router.get('/authentik/callback', asyncHandler(async (req, res) => {
+  const { code, state } = req.query;
+
+  if (!code) {
+    return sendError(res, 400, 'Authorization code required', null, 'Auth');
+  }
+
+  const redirectUri = `${req.protocol}://${req.get('host')}/api/auth/authentik/callback`;
   const requestInfo = getRequestInfo(req);
+
   const authResult = await authService.authenticate({
-    method: 'google',
-    idToken: req.body.idToken
+    method: 'authentik',
+    code,
+    redirectUri
   }, requestInfo);
-  
+
   if (!authResult) {
-    return sendError(res, 401, 'Google authentication failed', null, 'Auth');
+    return res.redirect('/login?error=auth_failed');
   }
 
   if (authResult.error) {
-    return sendError(res, 403, authResult.error, { 
-      status: authResult.status 
-    }, 'Auth');
+    return res.redirect(`/login?error=account_pending&status=${authResult.status}`);
   }
 
-  // Handle pending approval
   if (authResult.message && !authResult.session) {
-    return sendSuccess(res, {
-      message: authResult.message,
-      requiresApproval: true
-    }, 200, 'Auth');
+    return res.redirect('/login?message=account_pending_approval');
   }
 
   setAuthCookie(res, authResult.session.token);
-  
-  return sendSuccess(res, {
-    user: {
-      userId: authResult.user.user_id,
-      username: authResult.user.username,
-      email: authResult.user.email,
-      authProvider: 'google'
-    },
-    message: 'Google authentication successful'
-  }, 200, 'Auth');
+
+  const redirectTo = state ? decodeURIComponent(state) : '/';
+  res.redirect(redirectTo);
 }, 'Auth'));
-
-// Discord OAuth routes (conditionally loaded)
-if (process.env.DISCORD_BOT_TOKEN && process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET) {
-  /**
-   * Discord OAuth authentication
-   */
-  router.post('/discord', asyncHandler(async (req, res) => {
-    validateRequired(req, ['code', 'redirectUri']);
-    
-    const requestInfo = getRequestInfo(req);
-    const authResult = await authService.authenticate({
-      method: 'discord',
-      code: req.body.code,
-      redirectUri: req.body.redirectUri
-    }, requestInfo);
-    
-    if (!authResult) {
-      return sendError(res, 401, 'Discord authentication failed', null, 'Auth');
-    }
-
-    if (authResult.error) {
-      return sendError(res, 403, authResult.error, { 
-        status: authResult.status 
-      }, 'Auth');
-    }
-
-    // Handle pending approval
-    if (authResult.message && !authResult.session) {
-      return sendSuccess(res, {
-        message: authResult.message,
-        requiresApproval: true
-      }, 200, 'Auth');
-    }
-
-    setAuthCookie(res, authResult.session.token);
-    
-    return sendSuccess(res, {
-      user: {
-        userId: authResult.user.user_id,
-        username: authResult.user.username,
-        email: authResult.user.email,
-        authProvider: 'discord'
-      },
-      message: 'Discord authentication successful'
-    }, 200, 'Auth');
-  }, 'Auth'));
-
-  /**
-   * Discord OAuth callback (for web flow)
-   */
-  router.get('/discord/callback', asyncHandler(async (req, res) => {
-    const { code, state } = req.query;
-    
-    if (!code) {
-      return sendError(res, 400, 'Authorization code required', null, 'Auth');
-    }
-
-    const redirectUri = `${req.protocol}://${req.get('host')}/api/auth/discord/callback`;
-    const requestInfo = getRequestInfo(req);
-    
-    const authResult = await authService.authenticate({
-      method: 'discord',
-      code,
-      redirectUri
-    }, requestInfo);
-    
-    if (!authResult) {
-      return res.redirect('/login?error=discord_auth_failed');
-    }
-
-    if (authResult.error) {
-      return res.redirect(`/login?error=account_pending&status=${authResult.status}`);
-    }
-
-    // Handle pending approval
-    if (authResult.message && !authResult.session) {
-      return res.redirect('/login?message=account_pending_approval');
-    }
-
-    setAuthCookie(res, authResult.session.token);
-    
-    // Redirect to intended page or home
-    const redirectTo = state ? decodeURIComponent(state) : '/';
-    res.redirect(redirectTo);
-  }, 'Auth'));
-}
-
-/**
- * Admin authentication
- */
-router.post('/admin-login', loginLimiter, asyncHandler(async (req, res) => {
-  validateRequired(req, ['password']);
-  
-  const { password } = req.body;
-  const adminPassword = process.env.ADMIN_PASSWORD || 'admin';
-  
-  if (password !== adminPassword) {
-    logger.auth.warn('Failed admin login attempt', { 
-      ip: getRequestInfo(req).ip 
-    });
-    return sendError(res, 401, 'Invalid admin password', null, 'Auth');
-  }
-
-  // Create admin session token
-  const sessionToken = require('crypto').randomBytes(32).toString('hex');
-  
-  // Set admin cookie
-  res.cookie('admin_token', sessionToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
-  });
-
-  logger.auth.info('Admin login successful', { 
-    ip: getRequestInfo(req).ip 
-  });
-
-  return sendSuccess(res, {
-    message: 'Admin authentication successful',
-    isAdmin: true
-  }, 200, 'Auth');
-}, 'Auth'));
-
-/**
- * Get authentication status
- */
 router.get('/status', asyncHandler(async (req, res) => {
   const token = req.cookies?.auth_token;
   
@@ -463,20 +330,13 @@ router.get('/config', asyncHandler(async (req, res) => {
     }
   };
 
-  // Add Google OAuth if configured
-  if (process.env.GOOGLE_CLIENT_ID) {
-    config.methods.push('google');
-    config.google = {
-      clientId: process.env.GOOGLE_CLIENT_ID
-    };
-  }
-
-  // Add Discord OAuth if configured
-  if (process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET) {
-    config.methods.push('discord');
-    config.discord = {
-      clientId: process.env.DISCORD_CLIENT_ID,
-      redirectUri: `${req.protocol}://${req.get('host')}/api/auth/discord/callback`
+  // Add Authentik OAuth if configured
+  if (process.env.AUTHENTIK_CLIENT_ID && process.env.AUTHENTIK_BASE_URL) {
+    config.methods.push('authentik');
+    config.authentik = {
+      clientId: process.env.AUTHENTIK_CLIENT_ID,
+      authorizeUrl: `${process.env.AUTHENTIK_BASE_URL}/authorize`,
+      redirectUri: `${req.protocol}://${req.get('host')}/api/auth/authentik/callback`
     };
   }
 

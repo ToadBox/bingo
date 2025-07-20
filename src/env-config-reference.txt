@@ -15,17 +15,10 @@ SESSION_SECRET=your_session_secret_here
 # For basic site login with anonymous users
 SITE_PASSWORD=your_site_password_here
 
-# OAuth Providers
-GOOGLE_CLIENT_ID=your_google_client_id_here
-GOOGLE_CLIENT_SECRET=your_google_client_secret_here
-GOOGLE_CALLBACK_URL=http://localhost:{PORT}/api/auth/google/callback
-
-DISCORD_CLIENT_ID=your_discord_client_id_here
-DISCORD_CLIENT_SECRET=your_discord_client_secret_here
-DISCORD_CALLBACK_URL=http://localhost{PORT}/api/auth/discord/callback
-
-# Comma-separated list of Discord guild IDs whose members get auto-approved
-APPROVED_DISCORD_GUILDS=123456789012345678,234567890123456789
+# OAuth Provider - Authentik
+AUTHENTIK_CLIENT_ID=your_authentik_client_id_here
+AUTHENTIK_CLIENT_SECRET=your_authentik_client_secret_here
+AUTHENTIK_BASE_URL=https://auth.example.com/application/o
 
 # Root admin account (created automatically on first start)
 ROOT_ADMIN_USERNAME=admin

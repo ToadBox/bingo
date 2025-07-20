@@ -10,9 +10,8 @@ const shouldSkipAuth = (path) => {
   const skipPaths = [
     '/api/auth/login',
     '/api/auth/local-login',
-    '/api/auth/google',
-    '/api/auth/discord',
-    '/api/auth/discord/callback',
+    '/api/auth/authentik',
+    '/api/auth/authentik/callback',
     '/api/auth/register',
     '/api/auth/admin-login',
     '/api/auth/status',

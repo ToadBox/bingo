@@ -48,11 +48,9 @@ export interface AuthConfig {
     enabled: boolean
     requiresApproval: boolean
   }
-  google?: {
-    clientId: string
-  }
-  discord?: {
+  authentik?: {
+    authorizeUrl: string
     clientId: string
     redirectUri: string
   }
-} 
+}

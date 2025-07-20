@@ -143,17 +143,10 @@ SITE_PASSWORD=your-site-password-here
 # Database Configuration (SQLite)
 DATABASE_PATH=./src/data/bingo.sqlite
 
-# Authentication - Google OAuth (optional)
-# Get these from https://console.developers.google.com/
-# GOOGLE_CLIENT_ID=your-google-client-id
-# GOOGLE_CLIENT_SECRET=your-google-client-secret
-
-# Authentication - Discord OAuth (optional)
-# Get these from https://discord.com/developers/applications
-# DISCORD_CLIENT_ID=your-discord-client-id
-# DISCORD_CLIENT_SECRET=your-discord-client-secret
-# DISCORD_BOT_TOKEN=your-discord-bot-token
-# TOADBOX=your-discord-guild-id
+# Authentication - Authentik OAuth (optional)
+# AUTHENTIK_CLIENT_ID=your-authentik-client-id
+# AUTHENTIK_CLIENT_SECRET=your-authentik-client-secret
+# AUTHENTIK_BASE_URL=https://auth.example.com/application/o
 
 # Session Configuration
 SESSION_SECRET=your-session-secret-change-this-in-production
