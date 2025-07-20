@@ -49,11 +49,8 @@ class AuthService {
         case 'local':
           return await this.authenticateLocal(data.email, data.password, requestInfo);
         
-        case 'google':
-          return await this.authenticateGoogle(data.idToken, requestInfo);
-        
-        case 'discord':
-          return await this.authenticateDiscord(data.code, data.redirectUri, requestInfo);
+        case 'authentik':
+          return await this.authenticateAuthentik(data.code, data.redirectUri, requestInfo);
         
         default:
           logger.auth.warn('Invalid authentication method', { method });
@@ -162,9 +159,10 @@ class AuthService {
           return 'approved';
         }
         return 'pending';
-      
+
       case 'google':
       case 'local':
+      case 'authentik':
       default:
         return 'pending'; // Require manual approval for these methods
     }
@@ -644,13 +642,114 @@ class AuthService {
           Authorization: `Bearer ${accessToken}`
         }
       });
-      
+
       return response.data;
     } catch (error) {
       logger.auth.error('Discord user info error', { error: error.message });
       return null;
     }
   }
+
+  /**
+   * Authenticate using Authentik OAuth
+   * @param {string} code - Authentik authorization code
+   * @param {string} redirectUri - Redirect URI used in the OAuth flow
+   * @param {Object} requestInfo - Request information including IP and user agent
+   * @returns {Object} - Session info if authenticated
+   */
+  async authenticateAuthentik(code, redirectUri, requestInfo) {
+    try {
+      const tokenData = await this.getAuthentikToken(code, redirectUri);
+
+      if (!tokenData || !tokenData.access_token) {
+        logger.auth.warn('Authentik authentication failed - invalid code', {
+          ip: requestInfo.ip
+        });
+        return null;
+      }
+
+      const userInfo = await this.getAuthentikUserInfo(tokenData.access_token);
+
+      if (!userInfo) {
+        logger.auth.warn('Authentik authentication failed - no user info', {
+          ip: requestInfo.ip
+        });
+        return null;
+      }
+
+      // Check if user exists
+      let user = await userModel.getUserByAuthId('authentik', userInfo.sub);
+
+      if (!user) {
+        const approvalStatus = this.determineApprovalStatus('authentik', {});
+
+        user = await userModel.createUser({
+          username: userInfo.preferred_username || userInfo.email,
+          email: userInfo.email,
+          auth_provider: 'authentik',
+          auth_id: userInfo.sub,
+          approval_status: approvalStatus
+        });
+
+        logger.auth.info('New Authentik user created', {
+          userId: user.user_id,
+          email: userInfo.email,
+          approvalStatus
+        });
+
+        if (approvalStatus === 'pending') {
+          return { user, session: null, message: 'Account created. Pending approval.' };
+        }
+      } else if (user.approval_status !== 'approved') {
+        return { error: 'Account pending approval', status: user.approval_status };
+      }
+
+      const session = await this.createSession(user.user_id, requestInfo);
+
+      logger.auth.info('Successful Authentik authentication', {
+        userId: user.user_id,
+        email: userInfo.email,
+        ip: requestInfo.ip
+      });
+
+      return { user, session };
+    } catch (error) {
+      logger.auth.error('Authentication error with Authentik', { error: error.message });
+      return null;
+    }
+  }
+
+  async getAuthentikToken(code, redirectUri) {
+    try {
+      const params = new URLSearchParams();
+      params.append('client_id', process.env.AUTHENTIK_CLIENT_ID);
+      params.append('client_secret', process.env.AUTHENTIK_CLIENT_SECRET);
+      params.append('grant_type', 'authorization_code');
+      params.append('code', code);
+      params.append('redirect_uri', redirectUri);
+
+      const response = await axios.post(`${process.env.AUTHENTIK_BASE_URL}/token`, params, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+
+      return response.data;
+    } catch (error) {
+      logger.auth.error('Authentik token exchange error', { error: error.message });
+      return null;
+    }
+  }
+
+  async getAuthentikUserInfo(accessToken) {
+    try {
+      const response = await axios.get(`${process.env.AUTHENTIK_BASE_URL}/userinfo`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      return response.data;
+    } catch (error) {
+      logger.auth.error('Authentik user info error', { error: error.message });
+      return null;
+    }
+  }
 }
 
-module.exports = new AuthService(); 
+module.exports = new AuthService();

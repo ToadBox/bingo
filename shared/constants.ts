@@ -189,7 +189,8 @@ export const AUTH_CONFIG = {
     ANONYMOUS: 'anonymous',
     LOCAL: 'local',
     GOOGLE: 'google',
-    DISCORD: 'discord'
+    DISCORD: 'discord',
+    AUTHENTIK: 'authentik'
   }
 } as const
 

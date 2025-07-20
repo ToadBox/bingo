@@ -189,8 +189,7 @@ class ConfigLoader {
     const sensitiveKeys = [
       'DB_PASSWORD',
       'SESSION_SECRET',
-      'GOOGLE_CLIENT_SECRET',
-      'DISCORD_CLIENT_SECRET',
+      'AUTHENTIK_CLIENT_SECRET',
       'ROOT_ADMIN_PASSWORD',
       'JWT_SECRET',
       'SMTP_PASSWORD'

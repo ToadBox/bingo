@@ -99,21 +99,6 @@ export const authService = {
   },
 
   // Google OAuth login
-  async loginWithGoogle(idToken: string): Promise<AuthResponse> {
-    try {
-      const response = await api.post('/auth/google', { idToken })
-      return {
-        success: response.data.success,
-        user: response.data.user,
-      }
-    } catch (error) {
-      return {
-        success: false,
-        error: handleApiError(error),
-      }
-    }
-  },
-
   // Logout
   async logout(): Promise<void> {
     try {
