@@ -261,7 +261,7 @@ class RateLimiter {
                 '0.0.0.0';
       
       // Use user ID if authenticated
-      const userId = req.user?.id;
+      const userId = req.user?.user_id || req.user?.id;
       
       // If user is authenticated, include user ID in the key
       const identifier = userId ? `${userId}:${ip}` : ip;

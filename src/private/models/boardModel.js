@@ -7,6 +7,7 @@ const configLoader = require('../utils/configLoader');
 const DatabaseHelpers = require('../utils/databaseHelpers');
 const { createValidator } = require('../middleware/validation');
 const globalCache = require('../utils/globalCache');
+const BoardFormatterService = require('../services/boardFormatterService');
 
 class BoardModel {
   constructor() {
@@ -1146,29 +1147,13 @@ class BoardModel {
    * @returns {Object} - Parsed settings
    */
   _parseSettings(settings) {
-    if (!settings) {
-      return {
-        size: this.defaultBoardSize,
-        freeSpace: true
-      };
-    }
-    
-    try {
-      const parsedSettings = JSON.parse(settings);
-      return {
-        size: this.validateBoardSize(parsedSettings.size || this.defaultBoardSize),
-        freeSpace: parsedSettings.freeSpace !== false
-      };
-    } catch (e) {
-      logger.error('Failed to parse board settings', {
-        error: e.message,
-        settings
-      });
-      return {
-        size: this.defaultBoardSize,
-        freeSpace: true
-      };
-    }
+    // Delegate parsing to BoardFormatterService for consistency
+    const parsed = BoardFormatterService.parseSettings(settings);
+
+    // Ensure size respects model limits
+    parsed.size = this.validateBoardSize(parsed.size);
+
+    return parsed;
   }
 
   /**
