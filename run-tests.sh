@@ -23,4 +23,5 @@ node api-test.js
 TEST_EXIT_CODE=$?
 
 echo "Tests completed with exit code: $TEST_EXIT_CODE"
-exit $TEST_EXIT_CODE 
+exit $TEST_EXIT_CODE
+

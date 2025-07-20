@@ -59,13 +59,13 @@ router.post('/approve/:userId', asyncHandler(async (req, res) => {
     // Log the approval action
   logger.admin.info('User approved by admin', {
       userId,
-      adminId: req.user.id,
+      adminId: req.user.user_id || req.user.id,
       adminUsername: req.user.username
     });
     
     // Add notification about the approval to the admin's list
     await notificationModel.createNotification({
-      userId: req.user.id,
+      userId: req.user.user_id || req.user.id,
       message: `You approved user ID ${userId}`,
       type: 'admin_action',
       data: {
@@ -97,13 +97,13 @@ router.post('/reject/:userId', asyncHandler(async (req, res) => {
     // Log the rejection action
   logger.admin.info('User rejected by admin', {
       userId,
-      adminId: req.user.id,
+      adminId: req.user.user_id || req.user.id,
       adminUsername: req.user.username
     });
     
     // Add notification about the rejection to the admin's list
     await notificationModel.createNotification({
-      userId: req.user.id,
+      userId: req.user.user_id || req.user.id,
       message: `You rejected user ID ${userId}`,
       type: 'admin_action',
       data: {
@@ -230,14 +230,14 @@ router.post('/:userId/make-admin', async (req, res) => {
       type: 'admin_status',
       data: {
         grantedBy: req.user.username,
-        grantedById: req.user.id
+        grantedById: req.user.user_id || req.user.id
       }
     });
     
     // Log the action
     logger.info('User promoted to admin', {
       userId,
-      adminId: req.user.id,
+      adminId: req.user.user_id || req.user.id,
       adminUsername: req.user.username
     });
     
@@ -265,7 +265,7 @@ router.post('/:userId/remove-admin', async (req, res) => {
     }
     
     // Check if trying to remove own admin privileges
-    if (userId === req.user.id.toString()) {
+    if (userId === (req.user.user_id || req.user.id).toString()) {
       return res.status(400).json({ error: 'Cannot remove your own admin privileges' });
     }
     
@@ -287,14 +287,14 @@ router.post('/:userId/remove-admin', async (req, res) => {
       type: 'admin_status',
       data: {
         removedBy: req.user.username,
-        removedById: req.user.id
+        removedById: req.user.user_id || req.user.id
       }
     });
     
     // Log the action
     logger.info('Admin privileges removed from user', {
       userId,
-      adminId: req.user.id,
+      adminId: req.user.user_id || req.user.id,
       adminUsername: req.user.username
     });
     

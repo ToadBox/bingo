@@ -56,7 +56,7 @@ router.put('/profile', asyncHandler(async (req, res) => {
 
 // Get user's boards
 router.get('/boards', asyncHandler(async (req, res) => {
-    const userId = req.user.id;
+    const userId = req.user.user_id || req.user.id;
     const options = {
       userId,
       includePublic: false
